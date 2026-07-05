@@ -6,13 +6,10 @@ const mongoSanitizeMiddleware = mongoSanitize({ replaceWith: "_" });
 
 const xssSanitizeMiddleware = (req, res, next) => {
   try {
-    const escape = (s) => {
-      if (typeof s !== "string") return s;
-      return s
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-    };
+    const escape = (s) =>
+      typeof s !== "string"
+        ? s
+        : s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const clean = (o, d) => {
       if (d > 10 || o === null || o === undefined) return o;
       if (typeof o === "string") return escape(o);
@@ -72,7 +69,7 @@ const detectSuspiciousActivity = (req, res, next) => {
     const url = decodeURIComponent(req.originalUrl);
     const patterns = [/\.\.\//, /<script/i, /\/etc\/passwd/i];
     if (patterns.some((p) => p.test(url))) {
-      logger.warn("Suspicious request detected: " + url);
+      logger.warn("Suspicious request: " + url);
     }
   } catch (e) {}
   next();
