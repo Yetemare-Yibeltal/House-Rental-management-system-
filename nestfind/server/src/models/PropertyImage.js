@@ -279,3 +279,4 @@ propertyImageSchema.pre(/^find/, function (next) {
 const PropertyImage = mongoose.model("PropertyImage", propertyImageSchema);
 
 module.exports = PropertyImage;
+
