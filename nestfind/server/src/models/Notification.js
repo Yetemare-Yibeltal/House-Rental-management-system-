@@ -1,181 +1,205 @@
 const mongoose = require("mongoose");
-const {
-  NOTIFICATION_TYPE,
-  NOTIFICATION_SEVERITY,
-} = require("../config/constants");
 
-// ─── Read receipt sub-schema ──────────────────────────────────
-const readReceiptSchema = new mongoose.Schema(
-  {
-    userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-    },
-    readAt: {
-      type: Date,
-      default: Date.now,
-    },
-  },
-  { _id: false },
-);
-
-// ─── Main notification schema ─────────────────────────────────
 const notificationSchema = new mongoose.Schema(
   {
-    // ── Branch scope ───────────────────────────────────────
-    // null = system-wide notification (admin only)
-    branch: {
+    // ── RECIPIENT ─────────────────────────────────────────────────────────────
+    recipient: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Branch",
-      default: null,
-      index: true,
+      ref: "User",
+      required: [true, "Recipient reference is required"],
     },
 
-    // ── Notification type ──────────────────────────────────
+    // ── SENDER ────────────────────────────────────────────────────────────────
+    // null for system/AI notifications
+    sender: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    // ── NOTIFICATION TYPE ─────────────────────────────────────────────────────
     type: {
       type: String,
-      required: true,
-      enum: [
-        ...Object.values(NOTIFICATION_TYPE),
-        // Additional notification types
-        "order-ready",
-        "order-overdue",
-        "new-registration",
-        "account-approved",
-        "account-rejected",
-        "delivery-assigned",
-        "delivery-completed",
-        "payment-received",
-        "loyalty-tier-upgrade",
-        "ai-insight",
-        "backup-complete",
-        "backup-failed",
-        "system-update",
-        "branch-created",
-        "new-staff",
-        "audit",
-      ],
-      index: true,
+      required: [true, "Notification type is required"],
+      enum: {
+        values: [
+          // Booking notifications
+          "booking_received",
+          "booking_approved",
+          "booking_declined",
+          "booking_cancelled",
+          "booking_reminder",
+          "booking_completed",
+          // Rental notifications
+          "rental_started",
+          "rental_expiring_soon",
+          "rental_expired",
+          "rental_renewed",
+          "rental_terminated",
+          // Payment notifications
+          "payment_received",
+          "payment_due",
+          "payment_overdue",
+          "payment_failed",
+          "payment_refunded",
+          "security_deposit_returned",
+          // Maintenance notifications
+          "maintenance_submitted",
+          "maintenance_acknowledged",
+          "maintenance_in_progress",
+          "maintenance_completed",
+          "maintenance_rejected",
+          "maintenance_overdue",
+          // Contract notifications
+          "contract_created",
+          "contract_pending_signature",
+          "contract_signed",
+          "contract_activated",
+          "contract_expiring_soon",
+          "contract_terminated",
+          // Message notifications
+          "new_message",
+          // Property notifications
+          "property_approved",
+          "property_rejected",
+          "property_featured",
+          "property_view_milestone",
+          // Review notifications
+          "review_received",
+          "review_approved",
+          // KYC notifications
+          "kyc_submitted",
+          "kyc_approved",
+          "kyc_rejected",
+          // AI notifications
+          "ai_recommendation",
+          "ai_price_suggestion",
+          "ai_fraud_alert",
+          "ai_lease_summary_ready",
+          // Admin notifications
+          "admin_announcement",
+          "account_suspended",
+          "account_reactivated",
+          "subscription_expiring",
+          "subscription_expired",
+          // System notifications
+          "system_maintenance",
+          "welcome",
+        ],
+        message: "Invalid notification type",
+      },
     },
 
-    // ── Content ────────────────────────────────────────────
+    // ── CONTENT ───────────────────────────────────────────────────────────────
     title: {
       type: String,
-      required: true,
+      required: [true, "Notification title is required"],
       trim: true,
-      maxlength: 100,
-    },
-    titleAmharic: {
-      type: String,
-      trim: true,
-      default: null,
+      maxlength: [100, "Title cannot exceed 100 characters"],
     },
     message: {
       type: String,
-      required: true,
+      required: [true, "Notification message is required"],
       trim: true,
-      maxlength: 500,
-    },
-    messageAmharic: {
-      type: String,
-      trim: true,
-      default: null,
+      maxlength: [500, "Message cannot exceed 500 characters"],
     },
 
-    // ── Severity level ─────────────────────────────────────
-    severity: {
-      type: String,
-      enum: Object.values(NOTIFICATION_SEVERITY),
-      default: NOTIFICATION_SEVERITY.INFO,
-      index: true,
-    },
-
-    // ── Associated data ────────────────────────────────────
-    // Flexible object to store related IDs or extra context
-    data: {
-      // e.g. { orderId, tableNumber, itemName, stockLevel }
-      type: mongoose.Schema.Types.Mixed,
-      default: null,
-    },
-
-    // ── Action link ────────────────────────────────────────
-    // Frontend page to navigate to when notification clicked
+    // ── ACTION LINK ───────────────────────────────────────────────────────────
+    // Frontend route to navigate to when notification is clicked
     actionUrl: {
       type: String,
-      default: null,
       trim: true,
+      default: null,
     },
     actionLabel: {
       type: String,
-      default: null,
       trim: true,
-    },
-
-    // ── Read tracking ──────────────────────────────────────
-    readBy: {
-      type: [readReceiptSchema],
-      default: [],
-    },
-
-    // ── Target audience ────────────────────────────────────
-    // null = broadcast to all users in branch
-    // populated = only specific users see this
-    targetUsers: {
-      type: [
-        {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: "User",
-        },
-      ],
-      default: [],
-    },
-
-    // ── Target roles ───────────────────────────────────────
-    // Empty = all roles, populated = only specific roles
-    targetRoles: {
-      type: [String],
-      default: [],
-    },
-
-    // ── Source ─────────────────────────────────────────────
-    createdBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
       default: null,
     },
-    isSystemGenerated: {
-      type: Boolean,
-      default: true,
-    },
-    isAIGenerated: {
-      type: Boolean,
-      default: false,
+
+    // ── RELATED RESOURCES ─────────────────────────────────────────────────────
+    relatedResource: {
+      resourceType: {
+        type: String,
+        enum: [
+          "Property",
+          "Booking",
+          "Rental",
+          "Contract",
+          "Payment",
+          "MaintenanceRequest",
+          "Conversation",
+          "Review",
+          "User",
+          null,
+        ],
+        default: null,
+      },
+      resourceId: {
+        type: mongoose.Schema.Types.ObjectId,
+        default: null,
+      },
     },
 
-    // ── Delivery status ────────────────────────────────────
-    isDelivered: {
+    // ── STATUS ────────────────────────────────────────────────────────────────
+    isRead: {
       type: Boolean,
       default: false,
     },
-    deliveredAt: {
+    readAt: {
+      type: Date,
+      default: null,
+    },
+    isArchived: {
+      type: Boolean,
+      default: false,
+    },
+    archivedAt: {
       type: Date,
       default: null,
     },
 
-    // ── Expiry ─────────────────────────────────────────────
-    // MongoDB auto-deletes notification after 30 days
+    // ── DELIVERY ──────────────────────────────────────────────────────────────
+    channels: {
+      inApp: { type: Boolean, default: true },
+      email: { type: Boolean, default: false },
+      sms: { type: Boolean, default: false },
+      push: { type: Boolean, default: false },
+    },
+    emailSent: { type: Boolean, default: false },
+    emailSentAt: { type: Date, default: null },
+    smsSent: { type: Boolean, default: false },
+    smsSentAt: { type: Date, default: null },
+    pushSent: { type: Boolean, default: false },
+    pushSentAt: { type: Date, default: null },
+
+    // ── PRIORITY ──────────────────────────────────────────────────────────────
+    priority: {
+      type: String,
+      enum: ["low", "normal", "high", "urgent"],
+      default: "normal",
+    },
+
+    // ── ICON / VISUAL ─────────────────────────────────────────────────────────
+    icon: {
+      type: String,
+      default: null,
+    },
+    iconColor: {
+      type: String,
+      default: null,
+    },
+
+    // ── EXPIRY ────────────────────────────────────────────────────────────────
     expiresAt: {
       type: Date,
-      default: () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      default: null,
     },
 
-    // ── Priority for sorting ───────────────────────────────
-    priority: {
-      type: Number,
-      default: 0,
-      // Higher = shown first
-      // critical=100, error=75, warn=50, success=25, info=0
+    // ── METADATA ──────────────────────────────────────────────────────────────
+    metadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
     },
   },
   {
@@ -185,236 +209,184 @@ const notificationSchema = new mongoose.Schema(
   },
 );
 
-// ─── Indexes ──────────────────────────────────────────────────
-notificationSchema.index({ branch: 1, createdAt: -1 });
-notificationSchema.index({ type: 1, branch: 1 });
-notificationSchema.index({ severity: 1, branch: 1 });
-notificationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+// ── INDEXES ───────────────────────────────────────────────────────────────────
+notificationSchema.index({ recipient: 1, isRead: 1 });
+notificationSchema.index({ recipient: 1, createdAt: -1 });
+notificationSchema.index({ recipient: 1, type: 1 });
 notificationSchema.index({ createdAt: -1 });
-notificationSchema.index({ "readBy.userId": 1 });
+notificationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
-// ─── Virtual: total read count ────────────────────────────────
-notificationSchema.virtual("readCount").get(function () {
-  return this.readBy?.length || 0;
+// ── VIRTUALS ──────────────────────────────────────────────────────────────────
+notificationSchema.virtual("isExpired").get(function () {
+  if (!this.expiresAt) return false;
+  return this.expiresAt < new Date();
 });
 
-// ─── Virtual: is unread for a user ───────────────────────────
-notificationSchema.virtual("isUnread").get(function () {
-  // Set dynamically per user in service layer
-  return true;
+notificationSchema.virtual("timeAgo").get(function () {
+  const diff = Date.now() - this.createdAt.getTime();
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  if (days < 7) return `${days}d ago`;
+  return this.createdAt.toLocaleDateString();
 });
 
-// ─── Pre-save: set priority from severity ─────────────────────
-notificationSchema.pre("save", function (next) {
-  const priorityMap = {
-    [NOTIFICATION_SEVERITY.ERROR]: 100,
-    [NOTIFICATION_SEVERITY.WARN]: 75,
-    [NOTIFICATION_SEVERITY.SUCCESS]: 25,
-    [NOTIFICATION_SEVERITY.INFO]: 0,
-  };
-  this.priority = priorityMap[this.severity] || 0;
-  next();
-});
+// ── STATIC METHODS ────────────────────────────────────────────────────────────
 
-// ─── Static: create and broadcast notification ────────────────
-notificationSchema.statics.createAndBroadcast = async function (
-  data,
-  io = null,
-) {
-  const notification = await this.create(data);
-
-  // Emit via Socket.io if available
-  if (io) {
-    const room = data.branch ? `branch_${data.branch}` : "all_branches";
-
-    io.to(room).emit("notification-received", {
-      notification: {
-        _id: notification._id,
-        type: notification.type,
-        title: notification.title,
-        message: notification.message,
-        severity: notification.severity,
-        data: notification.data,
-        actionUrl: notification.actionUrl,
-        actionLabel: notification.actionLabel,
-        priority: notification.priority,
-        isAIGenerated: notification.isAIGenerated,
-        createdAt: notification.createdAt,
-      },
-      timestamp: new Date(),
-    });
-
-    notification.isDelivered = true;
-    notification.deliveredAt = new Date();
-    await notification.save();
-  }
-
-  return notification;
-};
-
-// ─── Static: get unread notifications for a user ─────────────
-notificationSchema.statics.getUnreadForUser = async function (
+// Get notifications for a user with pagination
+notificationSchema.statics.getUserNotifications = function (
   userId,
-  branchId,
-  userRole,
+  page = 1,
   limit = 20,
+  unreadOnly = false,
 ) {
+  const skip = (page - 1) * limit;
   const query = {
-    expiresAt: { $gt: new Date() },
-    "readBy.userId": { $ne: userId },
-    $or: [{ branch: branchId }, { branch: null }],
+    recipient: userId,
+    isArchived: false,
   };
-
-  // Filter by target roles if specified
-  if (userRole) {
-    query.$and = [
-      {
-        $or: [{ targetRoles: { $size: 0 } }, { targetRoles: userRole }],
-      },
-    ];
-  }
+  if (unreadOnly) query.isRead = false;
 
   return this.find(query)
-    .sort({ priority: -1, createdAt: -1 })
-    .limit(limit)
-    .lean();
+    .populate("sender", "firstName lastName avatar")
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit);
 };
 
-// ─── Static: get unread count for a user ─────────────────────
-notificationSchema.statics.getUnreadCount = async function (userId, branchId) {
-  return this.countDocuments({
-    expiresAt: { $gt: new Date() },
-    "readBy.userId": { $ne: userId },
-    $or: [{ branch: branchId }, { branch: null }],
+// Count unread notifications for a user
+notificationSchema.statics.countUnread = async function (userId) {
+  return await this.countDocuments({
+    recipient: userId,
+    isRead: false,
+    isArchived: false,
   });
 };
 
-// ─── Static: mark as read for a user ─────────────────────────
+// Create a notification
+notificationSchema.statics.createNotification = async function ({
+  recipientId,
+  senderId = null,
+  type,
+  title,
+  message,
+  actionUrl = null,
+  actionLabel = null,
+  resourceType = null,
+  resourceId = null,
+  priority = "normal",
+  channels = { inApp: true },
+  metadata = {},
+  expiresAt = null,
+}) {
+  return await this.create({
+    recipient: recipientId,
+    sender: senderId,
+    type,
+    title,
+    message,
+    actionUrl,
+    actionLabel,
+    relatedResource: {
+      resourceType,
+      resourceId,
+    },
+    priority,
+    channels,
+    metadata,
+    expiresAt,
+  });
+};
+
+// Create bulk notifications (for admin broadcasts)
+notificationSchema.statics.createBulkNotifications = async function (
+  recipientIds,
+  notificationData,
+) {
+  const notifications = recipientIds.map((recipientId) => ({
+    ...notificationData,
+    recipient: recipientId,
+  }));
+  return await this.insertMany(notifications);
+};
+
+// Mark all notifications as read for a user
+notificationSchema.statics.markAllAsRead = async function (userId) {
+  return await this.updateMany(
+    { recipient: userId, isRead: false },
+    { isRead: true, readAt: new Date() },
+  );
+};
+
+// Mark specific notification as read
 notificationSchema.statics.markAsRead = async function (
   notificationId,
   userId,
 ) {
-  return this.findByIdAndUpdate(
-    notificationId,
-    {
-      $addToSet: {
-        readBy: { userId, readAt: new Date() },
-      },
-    },
+  return await this.findOneAndUpdate(
+    { _id: notificationId, recipient: userId },
+    { isRead: true, readAt: new Date() },
     { new: true },
   );
 };
 
-// ─── Static: mark all as read for a user in branch ───────────
-notificationSchema.statics.markAllAsRead = async function (userId, branchId) {
-  const notifications = await this.find({
-    "readBy.userId": { $ne: userId },
-    $or: [{ branch: branchId }, { branch: null }],
-  }).select("_id");
-
-  const ids = notifications.map((n) => n._id);
-
-  if (!ids.length) return 0;
-
-  await this.updateMany(
-    { _id: { $in: ids } },
-    {
-      $addToSet: {
-        readBy: { userId, readAt: new Date() },
-      },
-    },
-  );
-
-  return ids.length;
-};
-
-// ─── Static: create low stock notification ───────────────────
-notificationSchema.statics.createLowStockAlert = async function (
-  item,
-  branchId,
-  io = null,
-) {
-  const isCritical = item.currentStock <= item.reorderThreshold * 0.5;
-
-  return this.createAndBroadcast(
-    {
-      branch: branchId,
-      type: isCritical ? "critical-stock" : "low-stock",
-      title: isCritical ? "🚨 Critical Stock Alert" : "⚠️ Low Stock Alert",
-      titleAmharic: isCritical ? "ወሳኝ የዕቃ ማስጠንቀቂያ" : "ዝቅተኛ ዕቃ ማስጠንቀቂያ",
-      message: `${item.name} is ${isCritical ? "critically low" : "running low"}: ${item.currentStock} ${item.unit} remaining (threshold: ${item.reorderThreshold} ${item.unit})`,
-      messageAmharic: `${item.name} ${isCritical ? "ወሳኝ ዝቅተኛ ደረጃ ላይ ነው" : "ዝቅተኛ ደረጃ ላይ ነው"}: ${item.currentStock} ${item.unit} ቀርቷል`,
-      severity: isCritical
-        ? NOTIFICATION_SEVERITY.ERROR
-        : NOTIFICATION_SEVERITY.WARN,
-      data: {
-        itemId: item._id,
-        itemName: item.name,
-        currentStock: item.currentStock,
-        reorderThreshold: item.reorderThreshold,
-        unit: item.unit,
-        supplierId: item.supplier,
-      },
-      actionUrl: "/inventory",
-      actionLabel: "View Inventory",
-      targetRoles: ["admin", "manager"],
-      isSystemGenerated: true,
-    },
-    io,
+// Archive all read notifications for a user
+notificationSchema.statics.archiveRead = async function (userId) {
+  return await this.updateMany(
+    { recipient: userId, isRead: true },
+    { isArchived: true, archivedAt: new Date() },
   );
 };
 
-// ─── Static: create order overdue notification ────────────────
-notificationSchema.statics.createOrderOverdueAlert = async function (
-  order,
-  branchId,
-  io = null,
-) {
-  return this.createAndBroadcast(
-    {
-      branch: branchId,
-      type: "order-overdue",
-      title: "⏰ Order Overdue",
-      message: `Table ${order.tableNumber} order has been waiting ${order.waitMinutes} minutes`,
-      severity: NOTIFICATION_SEVERITY.WARN,
-      data: {
-        orderId: order._id,
-        tableNumber: order.tableNumber,
-        waitMinutes: order.waitMinutes,
-        itemCount: order.itemCount,
-      },
-      actionUrl: "/kds",
-      actionLabel: "View KDS",
-      targetRoles: ["admin", "manager", "kitchen"],
-      isSystemGenerated: true,
-    },
-    io,
-  );
+// Delete old notifications (older than 90 days)
+notificationSchema.statics.deleteOld = async function (daysOld = 90) {
+  const threshold = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000);
+  return await this.deleteMany({
+    createdAt: { $lt: threshold },
+    isRead: true,
+  });
 };
 
-// ─── Static: create AI insight notification ───────────────────
-notificationSchema.statics.createAIInsightNotification = async function (
-  insight,
-  branchId,
-  io = null,
-) {
-  return this.createAndBroadcast(
+// Get notification statistics for admin
+notificationSchema.statics.getPlatformStats = async function () {
+  const stats = await this.aggregate([
     {
-      branch: branchId,
-      type: "ai-insight",
-      title: `🤖 AI Insight: ${insight.title}`,
-      message: insight.message,
-      severity: insight.severity || NOTIFICATION_SEVERITY.INFO,
-      data: insight.data || null,
-      actionUrl: insight.actionUrl || "/dashboard",
-      actionLabel: insight.actionLabel || "View Details",
-      targetRoles: ["admin", "manager"],
-      isSystemGenerated: true,
-      isAIGenerated: true,
+      $group: {
+        _id: "$type",
+        count: { $sum: 1 },
+        unreadCount: {
+          $sum: { $cond: ["$isRead", 0, 1] },
+        },
+      },
     },
-    io,
-  );
+    { $sort: { count: -1 } },
+    { $limit: 10 },
+  ]);
+  return stats;
+};
+
+// ── INSTANCE METHODS ──────────────────────────────────────────────────────────
+
+// Mark this notification as read
+notificationSchema.methods.markRead = async function () {
+  if (!this.isRead) {
+    this.isRead = true;
+    this.readAt = new Date();
+    await this.save();
+  }
+};
+
+// Archive this notification
+notificationSchema.methods.archive = async function () {
+  this.isArchived = true;
+  this.archivedAt = new Date();
+  await this.save();
 };
 
 const Notification = mongoose.model("Notification", notificationSchema);
+
 module.exports = Notification;
