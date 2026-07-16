@@ -230,7 +230,6 @@ const getNearbyLandmarks = async (lat, lng) => {
       closestSubCity = name;
     }
   }
-
   return {
     success: true,
     closestSubCity,
