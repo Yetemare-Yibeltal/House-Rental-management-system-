@@ -30,23 +30,23 @@ const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const logger = require('./utils/logger');
 
 // ── PLACEHOLDER ROUTES (replaced one by one as each route file is built) ──────
-const express_router = express.Router;
-const authRoutes = express_router();
-const propertyRoutes = express_router();
-const savedPropertyRoutes = express_router();
-const savedSearchRoutes = express_router();
-const bookingRoutes = express_router();
-const rentalRoutes = express_router();
-const contractRoutes = express_router();
-const paymentRoutes = express_router();
-const maintenanceRoutes = express_router();
-const landlordRoutes = express_router();
-const adminRoutes = express_router();
-const messageRoutes = express_router();
-const notificationRoutes = express_router();
-const blogRoutes = express_router();
-const faqRoutes = express_router();
-const aiRoutes = express_router();
+// ── IMPORT ROUTES ─────────────────────────────────────────────────────────────
+const authRoutes = require('./routes/authRoutes');
+const propertyRoutes = require('./routes/propertyRoutes');
+const savedPropertyRoutes = require('./routes/savedPropertyRoutes');
+const savedSearchRoutes = require('./routes/savedSearchRoutes');
+const bookingRoutes = require('./routes/bookingRoutes');
+const rentalRoutes = require('./routes/rentalRoutes');
+const contractRoutes = require('./routes/contractRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
+const maintenanceRoutes = require('./routes/maintenanceRoutes');
+const landlordRoutes = require('./routes/landlordRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const messageRoutes = require('./routes/messageRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
+const blogRoutes = require('./routes/blogRoutes');
+const faqRoutes = require('./routes/faqRoutes');
+const aiRoutes = require('./routes/ai/aiRoutes');
 
 // ── CREATE EXPRESS APP ────────────────────────────────────────────────────────
 const app = express();
