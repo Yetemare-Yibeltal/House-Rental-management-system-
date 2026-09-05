@@ -7,11 +7,13 @@ const { protect, authorize } = require("../middleware/auth");
 const {
   validateCreateBooking,
   validateUpdateBooking,
-  validateApproveBooking,
-  validateDeclineBooking,
   validateId,
   validatePagination,
 } = require("../validators/tenantValidators");
+const {
+  validateApproveBooking,
+  validateDeclineBooking,
+} = require("../validators/landlordValidators");
 
 // ── TENANT ROUTES ─────────────────────────────────────────────────────────────
 router.get(
