@@ -1,116 +1,65 @@
 // nestfind/nestfind/client/src/utils/tokenService.js
 
-import { STORAGE_KEYS } from "./constants";
+const ACCESS_TOKEN_KEY = "nestfind_access_token";
+const REFRESH_TOKEN_KEY = "nestfind_refresh_token";
+const USER_KEY = "nestfind_user";
 
-// ── ACCESS TOKEN ──────────────────────────────────────────────────────────────
-export const getAccessToken = () => {
-  try {
-    return localStorage.getItem(STORAGE_KEYS.ACCESS_TOKEN);
-  } catch {
-    return null;
-  }
-};
-
-export const setAccessToken = (token) => {
-  try {
-    if (token) {
-      localStorage.setItem(STORAGE_KEYS.ACCESS_TOKEN, token);
-    } else {
-      localStorage.removeItem(STORAGE_KEYS.ACCESS_TOKEN);
+export const tokenService = {
+  getAccessToken: () => {
+    try {
+      return localStorage.getItem(ACCESS_TOKEN_KEY);
+    } catch {
+      return null;
     }
-  } catch {}
-};
-
-export const removeAccessToken = () => {
-  try {
-    localStorage.removeItem(STORAGE_KEYS.ACCESS_TOKEN);
-  } catch {}
-};
-
-// ── USER DATA ─────────────────────────────────────────────────────────────────
-export const getStoredUser = () => {
-  try {
-    const user = localStorage.getItem(STORAGE_KEYS.USER);
-    return user ? JSON.parse(user) : null;
-  } catch {
-    return null;
-  }
-};
-
-export const setStoredUser = (user) => {
-  try {
-    if (user) {
-      localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(user));
-    } else {
-      localStorage.removeItem(STORAGE_KEYS.USER);
+  },
+  setAccessToken: (token) => {
+    try {
+      localStorage.setItem(ACCESS_TOKEN_KEY, token);
+    } catch {}
+  },
+  getRefreshToken: () => {
+    try {
+      return localStorage.getItem(REFRESH_TOKEN_KEY);
+    } catch {
+      return null;
     }
-  } catch {}
+  },
+  setRefreshToken: (token) => {
+    try {
+      localStorage.setItem(REFRESH_TOKEN_KEY, token);
+    } catch {}
+  },
+  setTokens: (accessToken, refreshToken) => {
+    try {
+      localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+      if (refreshToken) localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+    } catch {}
+  },
+  clearAuthData: () => {
+    try {
+      localStorage.removeItem(ACCESS_TOKEN_KEY);
+      localStorage.removeItem(REFRESH_TOKEN_KEY);
+      localStorage.removeItem(USER_KEY);
+    } catch {}
+  },
+  parseToken: (token) => {
+    try {
+      if (!token) return null;
+      const base64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      return JSON.parse(window.atob(base64));
+    } catch {
+      return null;
+    }
+  },
+  isTokenExpired: (token) => {
+    try {
+      const payload = tokenService.parseToken(token);
+      if (!payload?.exp) return true;
+      return payload.exp * 1000 < Date.now() + 60_000;
+    } catch {
+      return true;
+    }
+  },
 };
 
-export const removeStoredUser = () => {
-  try {
-    localStorage.removeItem(STORAGE_KEYS.USER);
-  } catch {}
-};
-
-// ── TOKEN PARSING ─────────────────────────────────────────────────────────────
-export const parseToken = (token) => {
-  try {
-    if (!token) return null;
-    const base64Url = token.split(".")[1];
-    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
-    const jsonPayload = decodeURIComponent(
-      atob(base64)
-        .split("")
-        .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
-        .join(""),
-    );
-    return JSON.parse(jsonPayload);
-  } catch {
-    return null;
-  }
-};
-
-export const isTokenExpired = (token) => {
-  try {
-    const parsed = parseToken(token);
-    if (!parsed || !parsed.exp) return true;
-    return Date.now() >= parsed.exp * 1000;
-  } catch {
-    return true;
-  }
-};
-
-export const getTokenExpiry = (token) => {
-  try {
-    const parsed = parseToken(token);
-    if (!parsed || !parsed.exp) return null;
-    return new Date(parsed.exp * 1000);
-  } catch {
-    return null;
-  }
-};
-
-export const getTokenRole = (token) => {
-  try {
-    const parsed = parseToken(token);
-    return parsed?.role || null;
-  } catch {
-    return null;
-  }
-};
-
-// ── CLEAR ALL ─────────────────────────────────────────────────────────────────
-export const clearAuthData = () => {
-  try {
-    localStorage.removeItem(STORAGE_KEYS.ACCESS_TOKEN);
-    localStorage.removeItem(STORAGE_KEYS.USER);
-  } catch {}
-};
-
-// ── IS AUTHENTICATED ──────────────────────────────────────────────────────────
-export const isAuthenticated = () => {
-  const token = getAccessToken();
-  if (!token) return false;
-  return !isTokenExpired(token);
-};
+export default tokenService;
