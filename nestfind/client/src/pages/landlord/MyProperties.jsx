@@ -1,69 +1,75 @@
 // nestfind/nestfind/client/src/pages/landlord/MyProperties.jsx
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, Eye, Edit, Trash2, MapPin, Bed, Bath } from 'lucide-react'
+import {
+  Plus,
+  Edit,
+  Trash2,
+  Eye,
+  Building2,
+  MapPin,
+  Bed,
+  Bath
+} from 'lucide-react'
 import DashboardLayout from '../../components/layout/DashboardLayout'
 import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import EmptyState from '../../components/ui/EmptyState'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
+import Pagination from '../../components/ui/Pagination'
 import { PageLoader } from '../../components/ui/LoadingSpinner'
 import SEO from '../../components/common/SEO'
-import propertyApi from '../../api/propertyApi'
+import landlordApi from '../../api/landlordApi'
 import { formatCurrency } from '../../utils/formatters'
 import toast from 'react-hot-toast'
 
-const STATUS_FILTERS = ['all', 'active', 'pending_review', 'rented', 'inactive']
+const STATUS_FILTERS = ['all', 'active', 'pending_review', 'inactive', 'draft']
 
 const MyProperties = () => {
   const [properties, setProperties] = useState([])
   const [loading, setLoading] = useState(true)
-  const [activeStatus, setActiveStatus] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
   const [deleteId, setDeleteId] = useState(null)
   const [deleting, setDeleting] = useState(false)
 
-  const fetchProperties = async () => {
-    setLoading(true)
-    try {
-      const response = await propertyApi.getProperties({ limit: 50 })
-      setProperties(response.data.data || [])
-    } catch {
-    } finally {
-      setLoading(false)
-    }
-  }
+  const fetchProperties = useCallback(
+    async (page = 1, status = statusFilter) => {
+      setLoading(true)
+      try {
+        const params = { page, limit: 9 }
+        if (status !== 'all') params.status = status
+        const response = await landlordApi.getProperties(params)
+        setProperties(response.data.data || [])
+        setTotalPages(response.data.pagination?.totalPages || 1)
+        setCurrentPage(page)
+      } catch {
+      } finally {
+        setLoading(false)
+      }
+    },
+    [statusFilter]
+  )
 
   useEffect(() => {
-    fetchProperties()
-  }, [])
+    fetchProperties(1, statusFilter)
+  }, [statusFilter])
 
   const handleDelete = async () => {
-    if (!deleteId) return
     setDeleting(true)
     try {
-      await propertyApi.deleteProperty(deleteId)
-      setProperties(prev => prev.filter(p => p._id !== deleteId))
+      await landlordApi.deleteProperty(deleteId)
       toast.success('Property deleted')
       setDeleteId(null)
+      fetchProperties(currentPage, statusFilter)
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to delete')
+      toast.error(err.response?.data?.message || 'Failed to delete property')
     } finally {
       setDeleting(false)
     }
   }
-
-  const filtered =
-    activeStatus === 'all'
-      ? properties
-      : properties.filter(p => p.status === activeStatus)
-
-  if (loading)
-    return (
-      <DashboardLayout>
-        <PageLoader />
-      </DashboardLayout>
-    )
 
   return (
     <DashboardLayout>
@@ -75,7 +81,7 @@ const MyProperties = () => {
             My Properties
           </h1>
           <p className='text-gray-400 text-sm mt-1'>
-            {properties.length} total listings
+            Manage your rental listings
           </p>
         </div>
         <Link to='/landlord/properties/add'>
@@ -85,108 +91,140 @@ const MyProperties = () => {
         </Link>
       </div>
 
-      {/* Status Filter */}
-      <div className='flex gap-2 flex-wrap mb-5'>
-        {STATUS_FILTERS.map(status => (
+      {/* Filters */}
+      <div className='flex flex-wrap gap-2 mb-5'>
+        {STATUS_FILTERS.map(s => (
           <button
-            key={status}
-            onClick={() => setActiveStatus(status)}
-            className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-all capitalize ${
-              activeStatus === status
-                ? 'bg-yellow-500/15 border-yellow-500/30 text-yellow-400'
+            key={s}
+            onClick={() => setStatusFilter(s)}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-full border capitalize transition-all ${
+              statusFilter === s
+                ? 'bg-yellow-500/20 border-yellow-500/40 text-yellow-400'
                 : 'border-surface-border text-gray-400 hover:border-yellow-500/30'
             }`}
           >
-            {status.replace(/_/g, ' ')} (
-            {status === 'all'
-              ? properties.length
-              : properties.filter(p => p.status === status).length}
-            )
+            {s.replace(/_/g, ' ')}
           </button>
         ))}
       </div>
 
-      {filtered.length === 0 ? (
+      {loading ? (
+        <PageLoader text='Loading properties...' />
+      ) : properties.length === 0 ? (
         <EmptyState
           emoji='🏠'
-          title='No properties found'
-          description='Add your first property listing to get started.'
+          title='No Properties Found'
+          description='Start listing your properties to find verified tenants.'
           action={() => (window.location.href = '/landlord/properties/add')}
-          actionLabel='Add Property'
+          actionLabel='Add Your First Property'
         />
       ) : (
-        <div className='space-y-4'>
-          {filtered.map(property => (
-            <div
-              key={property._id}
-              className='bg-surface-card border border-surface-border rounded-2xl p-4 hover:border-yellow-500/20 transition-all'
-            >
-              <div className='flex gap-4'>
-                {/* Thumbnail */}
-                <div className='w-20 h-20 rounded-xl overflow-hidden flex-shrink-0 bg-surface-light'>
+        <>
+          <div className='grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5'>
+            {properties.map(property => (
+              <div
+                key={property._id}
+                className='bg-surface-card border border-surface-border rounded-2xl overflow-hidden hover:border-yellow-500/20 transition-all group'
+              >
+                {/* Image */}
+                <div className='relative h-44 bg-surface-light overflow-hidden'>
                   {property.coverImage?.url ? (
                     <img
                       src={property.coverImage.url}
-                      alt=''
-                      className='w-full h-full object-cover'
+                      alt={property.title}
+                      className='w-full h-full object-cover group-hover:scale-105 transition-transform duration-500'
                     />
                   ) : (
-                    <div className='w-full h-full flex items-center justify-center text-2xl'>
+                    <div className='w-full h-full flex items-center justify-center text-4xl'>
                       🏠
+                    </div>
+                  )}
+                  <div className='absolute top-2 left-2'>
+                    <Badge status={property.status} size='xs' dot />
+                  </div>
+                  {property.isFeatured && (
+                    <div className='absolute top-2 right-2'>
+                      <Badge variant='gold' size='xs'>
+                        ⭐ Featured
+                      </Badge>
                     </div>
                   )}
                 </div>
 
-                {/* Details */}
-                <div className='flex-1 min-w-0'>
-                  <div className='flex items-start justify-between gap-2 mb-1'>
-                    <p className='text-sm font-bold text-white line-clamp-1'>
-                      {property.title}
-                    </p>
-                    <Badge status={property.status} size='xs' dot />
-                  </div>
-                  <div className='flex items-center gap-1 mb-1.5'>
+                {/* Content */}
+                <div className='p-4'>
+                  <h3 className='text-sm font-bold text-white mb-1 line-clamp-1'>
+                    {property.title}
+                  </h3>
+                  <div className='flex items-center gap-1 mb-2'>
                     <MapPin size={11} className='text-yellow-500' />
                     <span className='text-xs text-gray-400'>
-                      {property.location?.subCity}, {property.location?.city}
+                      {property.location?.subCity}
                     </span>
                   </div>
-                  <div className='flex items-center gap-3 mb-2 text-xs text-gray-400'>
-                    <span className='flex items-center gap-0.5'>
-                      <Bed size={11} /> {property.details?.bedrooms}bd
+
+                  <div className='flex items-center gap-3 text-xs text-gray-400 mb-3'>
+                    <span className='flex items-center gap-1'>
+                      <Bed size={11} />
+                      {property.details?.bedrooms === 0
+                        ? 'Studio'
+                        : `${property.details?.bedrooms}bd`}
                     </span>
-                    <span className='flex items-center gap-0.5'>
-                      <Bath size={11} /> {property.details?.bathrooms}ba
-                    </span>
-                    <span className='font-bold text-yellow-400'>
-                      {formatCurrency(property.pricing?.monthlyRent)}/mo
+                    <span className='flex items-center gap-1'>
+                      <Bath size={11} />
+                      {property.details?.bathrooms}ba
                     </span>
                   </div>
+
+                  <div className='flex items-center justify-between mb-3'>
+                    <p className='text-base font-bold text-yellow-400'>
+                      {formatCurrency(property.pricing?.monthlyRent)}
+                      <span className='text-xs text-gray-500 font-normal'>
+                        /mo
+                      </span>
+                    </p>
+                    <div className='flex gap-2 text-xs text-gray-500'>
+                      <span>{property.stats?.totalViews || 0} views</span>
+                      <span>{property.stats?.totalBookings || 0} bookings</span>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
                   <div className='flex gap-2'>
-                    <Link to={`/property/${property._id}`}>
-                      <Button variant='ghost' size='xs' icon={Eye}>
-                        View
-                      </Button>
-                    </Link>
-                    <Link to={`/landlord/properties/edit/${property._id}`}>
-                      <Button variant='outline' size='xs' icon={Edit}>
-                        Edit
-                      </Button>
-                    </Link>
-                    <Button
-                      variant='danger'
-                      size='xs'
-                      icon={Trash2}
-                      onClick={() => setDeleteId(property._id)}
+                    <Link
+                      to={`/property/${property._id}`}
+                      className='flex items-center gap-1 px-2.5 py-1.5 text-xs border border-surface-border text-gray-400 rounded-lg hover:border-yellow-500/50 hover:text-yellow-400 transition-all'
                     >
-                      Delete
-                    </Button>
+                      <Eye size={11} /> View
+                    </Link>
+                    <Link
+                      to={`/landlord/properties/edit/${property._id}`}
+                      className='flex items-center gap-1 px-2.5 py-1.5 text-xs border border-surface-border text-gray-400 rounded-lg hover:border-blue-500/50 hover:text-blue-400 transition-all'
+                    >
+                      <Edit size={11} /> Edit
+                    </Link>
+                    <button
+                      onClick={() => setDeleteId(property._id)}
+                      className='flex items-center gap-1 px-2.5 py-1.5 text-xs border border-surface-border text-gray-400 rounded-lg hover:border-red-500/50 hover:text-red-400 transition-all'
+                    >
+                      <Trash2 size={11} /> Delete
+                    </button>
                   </div>
                 </div>
               </div>
+            ))}
+          </div>
+
+          {totalPages > 1 && (
+            <div className='flex justify-center mt-6'>
+              <Pagination
+                currentPage={currentPage}
+                totalPages={totalPages}
+                onPageChange={p => fetchProperties(p, statusFilter)}
+              />
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
 
       <ConfirmDialog
@@ -194,7 +232,7 @@ const MyProperties = () => {
         onClose={() => setDeleteId(null)}
         onConfirm={handleDelete}
         title='Delete Property?'
-        message='This will permanently remove this property listing. This action cannot be undone.'
+        message='This will permanently delete the property listing and all associated data. This cannot be undone.'
         type='danger'
         confirmLabel='Delete Property'
         loading={deleting}
