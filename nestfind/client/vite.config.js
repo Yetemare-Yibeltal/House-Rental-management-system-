@@ -11,12 +11,25 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:5000",
         changeOrigin: true,
-        secure: false,
+      },
+      "/socket.io": {
+        target: "http://localhost:5000",
+        ws: true,
+        changeOrigin: true,
       },
     },
   },
   build: {
     outDir: "dist",
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom", "react-router-dom"],
+          ui: ["framer-motion", "lucide-react"],
+          charts: ["recharts"],
+        },
+      },
+    },
   },
 });
