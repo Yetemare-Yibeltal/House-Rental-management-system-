@@ -1,6 +1,6 @@
 // nestfind/nestfind/client/src/pages/landlord/BookingRequests.jsx
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import DashboardLayout from '../../components/layout/DashboardLayout'
 import BookingRequestCard from '../../components/landlord/BookingRequestCard'
 import EmptyState from '../../components/ui/EmptyState'
@@ -9,33 +9,45 @@ import { PageLoader } from '../../components/ui/LoadingSpinner'
 import SEO from '../../components/common/SEO'
 import landlordApi from '../../api/landlordApi'
 
-const STATUS_FILTERS = ['all', 'pending', 'approved', 'declined', 'completed']
+const STATUS_FILTERS = [
+  'all',
+  'pending',
+  'approved',
+  'declined',
+  'completed',
+  'cancelled'
+]
 
 const BookingRequests = () => {
   const [bookings, setBookings] = useState([])
   const [loading, setLoading] = useState(true)
-  const [activeStatus, setActiveStatus] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
+  const [counts, setCounts] = useState({})
 
-  const fetchBookings = async (status = activeStatus, page = 1) => {
-    setLoading(true)
-    try {
-      const params = { page, limit: 9 }
-      if (status !== 'all') params.status = status
-      const response = await landlordApi.getBookings(params)
-      setBookings(response.data.data || [])
-      setTotalPages(response.data.pagination?.totalPages || 1)
-      setCurrentPage(page)
-    } catch {
-    } finally {
-      setLoading(false)
-    }
-  }
+  const fetchBookings = useCallback(
+    async (page = 1, status = statusFilter) => {
+      setLoading(true)
+      try {
+        const params = { page, limit: 12 }
+        if (status !== 'all') params.status = status
+        const response = await landlordApi.getBookings(params)
+        setBookings(response.data.data || [])
+        setTotalPages(response.data.pagination?.totalPages || 1)
+        setCounts(response.data.counts || {})
+        setCurrentPage(page)
+      } catch {
+      } finally {
+        setLoading(false)
+      }
+    },
+    [statusFilter]
+  )
 
   useEffect(() => {
-    fetchBookings()
-  }, [])
+    fetchBookings(1, statusFilter)
+  }, [statusFilter])
 
   return (
     <DashboardLayout>
@@ -46,36 +58,44 @@ const BookingRequests = () => {
           Booking Requests
         </h1>
         <p className='text-gray-400 text-sm mt-1'>
-          Manage property visit requests from tenants
+          Manage tenant visit requests for your properties
+          {counts.pending > 0 && (
+            <span className='text-yellow-400 font-semibold'>
+              {' '}
+              · {counts.pending} pending
+            </span>
+          )}
         </p>
       </div>
 
-      <div className='flex gap-2 flex-wrap mb-5'>
-        {STATUS_FILTERS.map(status => (
+      {/* Filters */}
+      <div className='flex flex-wrap gap-2 mb-5'>
+        {STATUS_FILTERS.map(s => (
           <button
-            key={status}
-            onClick={() => {
-              setActiveStatus(status)
-              fetchBookings(status, 1)
-            }}
-            className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-all capitalize ${
-              activeStatus === status
-                ? 'bg-yellow-500/15 border-yellow-500/30 text-yellow-400'
+            key={s}
+            onClick={() => setStatusFilter(s)}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-full border capitalize transition-all ${
+              statusFilter === s
+                ? 'bg-yellow-500/20 border-yellow-500/40 text-yellow-400'
                 : 'border-surface-border text-gray-400 hover:border-yellow-500/30'
             }`}
           >
-            {status}
+            {s} {counts[s] > 0 && `(${counts[s]})`}
           </button>
         ))}
       </div>
 
       {loading ? (
-        <PageLoader />
+        <PageLoader text='Loading booking requests...' />
       ) : bookings.length === 0 ? (
         <EmptyState
           emoji='📅'
-          title='No booking requests'
-          description='Tenant visit requests will appear here when they book your properties.'
+          title='No Booking Requests'
+          description={
+            statusFilter !== 'all'
+              ? `No ${statusFilter} booking requests found.`
+              : 'Tenants will send visit requests when they are interested in your properties.'
+          }
         />
       ) : (
         <>
@@ -84,7 +104,7 @@ const BookingRequests = () => {
               <BookingRequestCard
                 key={booking._id}
                 booking={booking}
-                onUpdate={() => fetchBookings()}
+                onUpdate={() => fetchBookings(currentPage, statusFilter)}
               />
             ))}
           </div>
@@ -93,7 +113,7 @@ const BookingRequests = () => {
               <Pagination
                 currentPage={currentPage}
                 totalPages={totalPages}
-                onPageChange={p => fetchBookings(activeStatus, p)}
+                onPageChange={p => fetchBookings(p, statusFilter)}
               />
             </div>
           )}
