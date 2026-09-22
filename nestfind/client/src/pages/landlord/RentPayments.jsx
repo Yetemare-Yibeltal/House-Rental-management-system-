@@ -1,35 +1,40 @@
 // nestfind/nestfind/client/src/pages/landlord/RentPayments.jsx
 
 import { useState, useEffect } from 'react'
+import { CreditCard, TrendingUp, AlertCircle } from 'lucide-react'
 import DashboardLayout from '../../components/layout/DashboardLayout'
-import DataTable from '../../components/ui/DataTable'
 import StatCard from '../../components/ui/StatCard'
+import DataTable from '../../components/ui/DataTable'
 import Badge from '../../components/ui/Badge'
 import SEO from '../../components/common/SEO'
 import landlordApi from '../../api/landlordApi'
-import { formatCurrency, formatDate } from '../../utils/formatters'
-import { CreditCard, TrendingUp, AlertCircle } from 'lucide-react'
+import {
+  formatCurrency,
+  formatDate,
+  formatDateTime
+} from '../../utils/formatters'
 
 const RentPayments = () => {
   const [payments, setPayments] = useState([])
+  const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
-  const [summary, setSummary] = useState(null)
-  const [overdue, setOverdue] = useState([])
+  const [overdueRentals, setOverdueRentals] = useState([])
 
   useEffect(() => {
     const fetchData = async () => {
+      setLoading(true)
       try {
-        const [paymentsRes, summaryRes, overdueRes] = await Promise.all([
-          landlordApi.getPayments({ page: 1, limit: 20 }),
-          landlordApi.getMonthlySummary(),
-          landlordApi.getOverduePayments()
+        const [paymentsRes, statsRes, overdueRes] = await Promise.all([
+          landlordApi.getPayments({ page: 1, limit: 15 }),
+          landlordApi.getPaymentStats(),
+          landlordApi.getOverdueRentals()
         ])
         setPayments(paymentsRes.data.data || [])
         setTotalPages(paymentsRes.data.pagination?.totalPages || 1)
-        setSummary(summaryRes.data.data)
-        setOverdue(overdueRes.data.data.overdue || [])
+        setStats(statsRes.data.data)
+        setOverdueRentals(overdueRes.data.data || [])
       } catch {
       } finally {
         setLoading(false)
@@ -38,20 +43,37 @@ const RentPayments = () => {
     fetchData()
   }, [])
 
-  const annualTotal =
-    summary?.summary?.reduce((sum, m) => sum + m.totalAmount, 0) || 0
+  const fetchPayments = async page => {
+    try {
+      const response = await landlordApi.getPayments({ page, limit: 15 })
+      setPayments(response.data.data || [])
+      setTotalPages(response.data.pagination?.totalPages || 1)
+      setCurrentPage(page)
+    } catch {}
+  }
 
   const columns = [
     {
       key: 'payer',
       label: 'Tenant',
-      render: val => `${val?.firstName} ${val?.lastName}`
+      render: val => (
+        <span className='text-sm font-medium text-white'>
+          {val?.firstName} {val?.lastName}
+        </span>
+      )
     },
     {
       key: 'property',
       label: 'Property',
       render: val => (
-        <span className='truncate max-w-32 block text-xs'>{val?.title}</span>
+        <span className='text-xs text-gray-300 line-clamp-1'>{val?.title}</span>
+      )
+    },
+    {
+      key: 'paymentType',
+      label: 'Type',
+      render: val => (
+        <span className='text-xs capitalize'>{val?.replace(/_/g, ' ')}</span>
       )
     },
     {
@@ -62,10 +84,19 @@ const RentPayments = () => {
       )
     },
     {
+      key: 'netAmount',
+      label: 'Net Received',
+      render: (val, row) => (
+        <span className='font-semibold text-green-400'>
+          {formatCurrency(val || row.amount)}
+        </span>
+      )
+    },
+    {
       key: 'paymentMethod',
       label: 'Method',
       render: val => (
-        <span className='capitalize text-xs'>{val?.replace(/_/g, ' ')}</span>
+        <span className='text-xs capitalize'>{val?.replace(/_/g, ' ')}</span>
       )
     },
     {
@@ -76,7 +107,9 @@ const RentPayments = () => {
     {
       key: 'paidAt',
       label: 'Date',
-      render: val => <span className='text-xs'>{formatDate(val)}</span>
+      render: val => (
+        <span className='text-xs text-gray-400'>{formatDate(val)}</span>
+      )
     }
   ]
 
@@ -93,71 +126,77 @@ const RentPayments = () => {
         </p>
       </div>
 
-      <div className='grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6'>
+      {/* Stats */}
+      <div className='grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6'>
         <StatCard
-          title='Annual Revenue'
-          value={annualTotal}
+          title='Total Revenue'
+          value={stats?.totalRevenue || 0}
           prefix='ETB '
-          icon={TrendingUp}
+          icon={CreditCard}
           iconColor='text-green-400'
           iconBg='bg-green-500/10 border-green-500/20'
+          loading={loading}
         />
         <StatCard
           title='This Month'
-          value={summary?.summary?.[new Date().getMonth()]?.totalAmount || 0}
+          value={stats?.monthlyRevenue || 0}
           prefix='ETB '
-          icon={CreditCard}
+          icon={TrendingUp}
           iconColor='text-yellow-400'
           iconBg='bg-yellow-500/10 border-yellow-500/20'
+          loading={loading}
         />
         <StatCard
-          title='Overdue Payments'
-          value={overdue.length}
+          title='Pending'
+          value={stats?.pendingPayments || 0}
+          icon={AlertCircle}
+          iconColor='text-orange-400'
+          iconBg='bg-orange-500/10 border-orange-500/20'
+          loading={loading}
+        />
+        <StatCard
+          title='Overdue'
+          value={overdueRentals.length}
           icon={AlertCircle}
           iconColor='text-red-400'
           iconBg='bg-red-500/10 border-red-500/20'
-          description='Tenants with missed payments'
+          loading={loading}
         />
       </div>
 
-      {overdue.length > 0 && (
-        <div className='mb-5 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl'>
-          <p className='text-sm font-bold text-red-400 mb-2'>
-            ⚠️ Overdue Payments
-          </p>
-          <div className='space-y-1'>
-            {overdue.map(rental => (
-              <div
-                key={rental._id}
-                className='flex items-center justify-between text-xs'
-              >
-                <span className='text-gray-300'>
-                  {rental.tenant?.firstName} {rental.tenant?.lastName} —{' '}
-                  {rental.property?.title}
-                </span>
-                <span className='text-red-400 font-semibold'>
-                  {formatCurrency(rental.monthlyRent)}
-                </span>
-              </div>
-            ))}
+      {/* Overdue Alert */}
+      {overdueRentals.length > 0 && (
+        <div className='flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl mb-5'>
+          <AlertCircle
+            size={18}
+            className='text-red-400 flex-shrink-0 mt-0.5'
+          />
+          <div>
+            <p className='text-sm font-semibold text-red-400'>
+              {overdueRentals.length} Overdue Payment
+              {overdueRentals.length !== 1 ? 's' : ''}
+            </p>
+            <p className='text-xs text-gray-400 mt-0.5'>
+              {overdueRentals
+                .map(r => `${r.tenant?.firstName} ${r.tenant?.lastName}`)
+                .join(', ')}{' '}
+              — please follow up.
+            </p>
           </div>
         </div>
       )}
 
+      {/* Payments Table */}
       <DataTable
-        title='Payment History'
         columns={columns}
         data={payments}
         loading={loading}
-        emptyTitle='No payments yet'
-        emptyDescription='Rent payments from your tenants will appear here'
+        emptyTitle='No Payments Yet'
+        emptyDescription='Payment records will appear here as tenants pay rent.'
         currentPage={currentPage}
         totalPages={totalPages}
-        onPageChange={async page => {
-          const res = await landlordApi.getPayments({ page, limit: 20 })
-          setPayments(res.data.data || [])
-          setCurrentPage(page)
-        }}
+        onPageChange={fetchPayments}
+        rowKey='_id'
       />
     </DashboardLayout>
   )
