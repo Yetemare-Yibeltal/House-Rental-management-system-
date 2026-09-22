@@ -1,29 +1,24 @@
 // nestfind/nestfind/client/src/utils/formatters.js
 
-// ── CURRENCY ──────────────────────────────────────────────────────────────────
 export const formatCurrency = (amount, currency = "ETB") => {
-  if (amount === null || amount === undefined) return "N/A";
-  return `${currency} ${Number(amount).toLocaleString("en-ET")}`;
+  if (amount === null || amount === undefined || isNaN(amount))
+    return `${currency} 0`;
+  return `${currency} ${Number(amount).toLocaleString("en-ET", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 };
 
 export const formatCompactCurrency = (amount) => {
-  if (!amount) return "N/A";
-  if (amount >= 1000000) return `ETB ${(amount / 1000000).toFixed(1)}M`;
-  if (amount >= 1000) return `ETB ${(amount / 1000).toFixed(0)}k`;
+  if (!amount && amount !== 0) return "ETB 0";
+  if (amount >= 1_000_000) return `ETB ${(amount / 1_000_000).toFixed(1)}M`;
+  if (amount >= 1_000) return `ETB ${(amount / 1_000).toFixed(0)}K`;
   return `ETB ${amount}`;
 };
 
-// ── DATE & TIME ───────────────────────────────────────────────────────────────
-export const formatDate = (date) => {
-  if (!date) return "N/A";
-  return new Date(date).toLocaleDateString("en-ET", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
+export const formatNumber = (num) => {
+  if (num === null || num === undefined) return "0";
+  return Number(num).toLocaleString("en-ET");
 };
 
-export const formatDateShort = (date) => {
+export const formatDate = (date) => {
   if (!date) return "N/A";
   return new Date(date).toLocaleDateString("en-ET", {
     year: "numeric",
@@ -44,133 +39,41 @@ export const formatDateTime = (date) => {
 };
 
 export const formatTimeAgo = (date) => {
-  if (!date) return "N/A";
-  const diff = Date.now() - new Date(date).getTime();
-  const minutes = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-  const weeks = Math.floor(days / 7);
-  const months = Math.floor(days / 30);
+  if (!date) return "";
+  const now = new Date();
+  const then = new Date(date);
+  const diff = Math.floor((now - then) / 1000);
 
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days < 7) return `${days}d ago`;
-  if (weeks < 4) return `${weeks}w ago`;
-  if (months < 12) return `${months}mo ago`;
-  return formatDateShort(date);
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  if (diff < 2592000) return `${Math.floor(diff / 604800)}w ago`;
+  if (diff < 31536000) return `${Math.floor(diff / 2592000)}mo ago`;
+  return `${Math.floor(diff / 31536000)}y ago`;
 };
 
-export const formatDuration = (startDate, endDate) => {
-  if (!startDate || !endDate) return "N/A";
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  const months =
-    (end.getFullYear() - start.getFullYear()) * 12 +
-    (end.getMonth() - start.getMonth());
-  if (months < 12) return `${months} month${months !== 1 ? "s" : ""}`;
-  const years = Math.floor(months / 12);
-  const remainingMonths = months % 12;
-  if (remainingMonths === 0) return `${years} year${years !== 1 ? "s" : ""}`;
-  return `${years}y ${remainingMonths}m`;
-};
-
-export const formatDaysRemaining = (endDate) => {
-  if (!endDate) return null;
-  const days = Math.ceil(
-    (new Date(endDate) - Date.now()) / (1000 * 60 * 60 * 24),
-  );
-  if (days < 0) return "Expired";
-  if (days === 0) return "Today";
-  if (days === 1) return "1 day left";
-  if (days < 30) return `${days} days left`;
-  if (days < 60) return "1 month left";
-  const months = Math.floor(days / 30);
-  return `${months} months left`;
-};
-
-// ── PROPERTY ──────────────────────────────────────────────────────────────────
-export const formatArea = (area, unit = "sqm") => {
+export const formatArea = (area) => {
   if (!area) return "N/A";
-  return `${area} ${unit}`;
+  return `${area} m²`;
 };
 
 export const formatBedrooms = (bedrooms) => {
-  if (bedrooms === 0) return "Studio";
-  if (bedrooms === 1) return "1 Bedroom";
-  return `${bedrooms} Bedrooms`;
-};
-
-export const formatPropertyType = (type) => {
-  if (!type) return "N/A";
-  return type.charAt(0).toUpperCase() + type.slice(1).replace(/_/g, " ");
+  if (bedrooms === 0 || bedrooms === "0") return "Studio";
+  if (!bedrooms) return "N/A";
+  return `${bedrooms} Bedroom${Number(bedrooms) !== 1 ? "s" : ""}`;
 };
 
 export const formatFurnished = (furnished) => {
+  if (!furnished) return "N/A";
   const map = {
     fully_furnished: "Fully Furnished",
     semi_furnished: "Semi Furnished",
     unfurnished: "Unfurnished",
   };
-  return map[furnished] || "N/A";
+  return map[furnished] || furnished;
 };
 
-export const formatAddress = (location) => {
-  if (!location) return "N/A";
-  const parts = [location.address, location.subCity, location.city].filter(
-    Boolean,
-  );
-  return parts.join(", ");
-};
-
-// ── USER ──────────────────────────────────────────────────────────────────────
-export const formatFullName = (user) => {
-  if (!user) return "Unknown";
-  return `${user.firstName || ""} ${user.lastName || ""}`.trim();
-};
-
-export const formatRole = (role) => {
-  const map = { tenant: "Tenant", landlord: "Landlord", admin: "Admin" };
-  return map[role] || role;
-};
-
-export const formatPhone = (phone) => {
-  if (!phone) return "N/A";
-  if (phone.startsWith("+251")) {
-    return `+251 ${phone.slice(4, 6)} ${phone.slice(6, 9)} ${phone.slice(9)}`;
-  }
-  if (phone.startsWith("0")) {
-    return `0${phone.slice(1, 3)} ${phone.slice(3, 6)} ${phone.slice(6)}`;
-  }
-  return phone;
-};
-
-// ── STATUS ────────────────────────────────────────────────────────────────────
-export const formatStatus = (status) => {
-  if (!status) return "N/A";
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-};
-
-export const getStatusColor = (status) => {
-  const colors = {
-    active: "green",
-    approved: "green",
-    completed: "green",
-    pending: "yellow",
-    pending_review: "yellow",
-    submitted: "yellow",
-    in_progress: "blue",
-    declined: "red",
-    rejected: "red",
-    cancelled: "red",
-    suspended: "red",
-    expired: "gray",
-    inactive: "gray",
-  };
-  return colors[status] || "gray";
-};
-
-// ── FILE SIZE ─────────────────────────────────────────────────────────────────
 export const formatFileSize = (bytes) => {
   if (!bytes) return "0 B";
   if (bytes < 1024) return `${bytes} B`;
@@ -178,29 +81,31 @@ export const formatFileSize = (bytes) => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
-// ── NUMBER ────────────────────────────────────────────────────────────────────
-export const formatNumber = (num) => {
-  if (num === null || num === undefined) return "0";
-  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}k`;
-  return num.toString();
+export const formatAddress = (location) => {
+  if (!location) return "";
+  const parts = [location.address, location.subCity, location.city].filter(
+    Boolean,
+  );
+  return parts.join(", ");
 };
 
-export const formatRating = (rating) => {
-  if (!rating) return "0.0";
-  return Number(rating).toFixed(1);
+export const formatDaysRemaining = (endDate) => {
+  if (!endDate) return "N/A";
+  const now = new Date();
+  const end = new Date(endDate);
+  const diff = Math.ceil((end - now) / (1000 * 60 * 60 * 24));
+  if (diff < 0) return "Expired";
+  if (diff === 0) return "Expires today";
+  if (diff === 1) return "1 day left";
+  if (diff < 30) return `${diff} days left`;
+  if (diff < 365) return `${Math.floor(diff / 30)} months left`;
+  return `${Math.floor(diff / 365)} year(s) left`;
 };
 
-export const formatPercentage = (value, total) => {
-  if (!total) return "0%";
-  return `${Math.round((value / total) * 100)}%`;
-};
-
-// ── TRUNCATE ──────────────────────────────────────────────────────────────────
-export const truncate = (str, length = 100) => {
+export const truncate = (str, maxLength = 100) => {
   if (!str) return "";
-  if (str.length <= length) return str;
-  return `${str.substring(0, length)}...`;
+  if (str.length <= maxLength) return str;
+  return `${str.slice(0, maxLength)}...`;
 };
 
 export const truncateWords = (str, wordCount = 20) => {
