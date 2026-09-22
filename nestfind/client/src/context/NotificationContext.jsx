@@ -1,161 +1,109 @@
 // nestfind/nestfind/client/src/context/NotificationContext.jsx
 
-import {
-  createContext,
-  useContext,
-  useState,
-  useEffect,
-  useCallback
-} from 'react'
+import { createContext, useContext, useEffect, useCallback } from 'react'
+import { create } from 'zustand'
 import notificationApi from '../api/notificationApi'
 import { useAuthStore } from './AuthContext'
-import { useSocketStore } from './SocketContext'
 import toast from 'react-hot-toast'
+
+export const useNotificationStore = create((set, get) => ({
+  notifications: [],
+  unreadCount: 0,
+  loading: false,
+
+  fetchNotifications: async () => {
+    set({ loading: true })
+    try {
+      const response = await notificationApi.getNotifications({ limit: 50 })
+      const notifications = response.data.data || []
+      set({
+        notifications,
+        unreadCount: notifications.filter(
+          n => !n.isRead && n.status !== 'archived'
+        ).length,
+        loading: false
+      })
+    } catch {
+      set({ loading: false })
+    }
+  },
+
+  markAsRead: async id => {
+    try {
+      await notificationApi.markAsRead(id)
+      set(state => ({
+        notifications: state.notifications.map(n =>
+          n._id === id ? { ...n, isRead: true } : n
+        ),
+        unreadCount: Math.max(0, state.unreadCount - 1)
+      }))
+    } catch {}
+  },
+
+  markAllAsRead: async () => {
+    try {
+      await notificationApi.markAllAsRead()
+      set(state => ({
+        notifications: state.notifications.map(n => ({ ...n, isRead: true })),
+        unreadCount: 0
+      }))
+    } catch {}
+  },
+
+  archiveNotification: async id => {
+    try {
+      await notificationApi.archiveNotification(id)
+      set(state => ({
+        notifications: state.notifications.map(n =>
+          n._id === id ? { ...n, status: 'archived' } : n
+        ),
+        unreadCount: state.notifications.find(n => n._id === id && !n.isRead)
+          ? Math.max(0, state.unreadCount - 1)
+          : state.unreadCount
+      }))
+    } catch {}
+  },
+
+  deleteNotification: async id => {
+    try {
+      await notificationApi.deleteNotification(id)
+      set(state => ({
+        notifications: state.notifications.filter(n => n._id !== id),
+        unreadCount: state.notifications.find(n => n._id === id && !n.isRead)
+          ? Math.max(0, state.unreadCount - 1)
+          : state.unreadCount
+      }))
+    } catch {}
+  },
+
+  addRealTimeNotification: notification => {
+    set(state => ({
+      notifications: [notification, ...state.notifications],
+      unreadCount: state.unreadCount + 1
+    }))
+    toast(`🔔 ${notification.title}`, {
+      duration: 4000,
+      position: 'top-right'
+    })
+  },
+
+  clearAll: () => set({ notifications: [], unreadCount: 0 })
+}))
 
 const NotificationContext = createContext(null)
 
-export const useNotificationStore = () => {
-  const context = useContext(NotificationContext)
-  if (!context)
-    throw new Error(
-      'useNotificationStore must be used within NotificationProvider'
-    )
-  return context
-}
-
 export const NotificationProvider = ({ children }) => {
-  const [notifications, setNotifications] = useState([])
-  const [unreadCount, setUnreadCount] = useState(0)
-  const [loading, setLoading] = useState(false)
-  const [page, setPage] = useState(1)
-  const [totalPages, setTotalPages] = useState(1)
+  const { fetchNotifications, addRealTimeNotification } = useNotificationStore()
   const { isAuthenticated } = useAuthStore()
-  const { socket } = useSocketStore()
-
-  const fetchNotifications = useCallback(
-    async (pageNum = 1, unreadOnly = false) => {
-      if (!isAuthenticated) return
-      setLoading(true)
-      try {
-        const response = await notificationApi.getNotifications({
-          page: pageNum,
-          limit: 20,
-          unreadOnly
-        })
-        const { data, pagination } = response.data
-        if (pageNum === 1) setNotifications(data)
-        else setNotifications(prev => [...prev, ...data])
-        setUnreadCount(pagination.unreadCount || 0)
-        setTotalPages(pagination.totalPages || 1)
-        setPage(pageNum)
-      } catch {
-      } finally {
-        setLoading(false)
-      }
-    },
-    [isAuthenticated]
-  )
-
-  const fetchUnreadCount = useCallback(async () => {
-    if (!isAuthenticated) return
-    try {
-      const response = await notificationApi.getUnreadCount()
-      setUnreadCount(response.data.data.unreadCount || 0)
-    } catch {}
-  }, [isAuthenticated])
-
-  const markAsRead = useCallback(async id => {
-    try {
-      await notificationApi.markAsRead(id)
-      setNotifications(prev =>
-        prev.map(n => (n._id === id ? { ...n, isRead: true } : n))
-      )
-      setUnreadCount(prev => Math.max(0, prev - 1))
-    } catch {}
-  }, [])
-
-  const markAllAsRead = useCallback(async () => {
-    try {
-      await notificationApi.markAllAsRead()
-      setNotifications(prev => prev.map(n => ({ ...n, isRead: true })))
-      setUnreadCount(0)
-      toast.success('All notifications marked as read')
-    } catch {}
-  }, [])
-
-  const deleteNotification = useCallback(async id => {
-    try {
-      await notificationApi.deleteNotification(id)
-      setNotifications(prev => prev.filter(n => n._id !== id))
-    } catch {}
-  }, [])
-
-  const addNotification = useCallback(notification => {
-    setNotifications(prev => [notification, ...prev])
-    setUnreadCount(prev => prev + 1)
-  }, [])
-
-  // Socket events
-  useEffect(() => {
-    if (!socket) return
-
-    const handleNewNotification = ({ notification, unreadCount: count }) => {
-      if (notification) addNotification(notification)
-      if (count !== undefined) setUnreadCount(count)
-      if (notification?.title) {
-        toast(notification.title, {
-          icon: notification.metadata?.icon || '🔔',
-          duration: 4000
-        })
-      }
-    }
-
-    const handleNotificationCount = ({ unreadCount: count }) => {
-      setUnreadCount(count || 0)
-    }
-
-    const handleAllRead = () => {
-      setNotifications(prev => prev.map(n => ({ ...n, isRead: true })))
-      setUnreadCount(0)
-    }
-
-    socket.on('notification', handleNewNotification)
-    socket.on('notification_count', handleNotificationCount)
-    socket.on('all_notifications_read', handleAllRead)
-
-    return () => {
-      socket.off('notification', handleNewNotification)
-      socket.off('notification_count', handleNotificationCount)
-      socket.off('all_notifications_read', handleAllRead)
-    }
-  }, [socket, addNotification])
 
   useEffect(() => {
     if (isAuthenticated) {
-      fetchUnreadCount()
-    } else {
-      setNotifications([])
-      setUnreadCount(0)
+      fetchNotifications()
     }
-  }, [isAuthenticated, fetchUnreadCount])
-
-  const value = {
-    notifications,
-    unreadCount,
-    loading,
-    page,
-    totalPages,
-    hasMore: page < totalPages,
-    fetchNotifications,
-    fetchUnreadCount,
-    markAsRead,
-    markAllAsRead,
-    deleteNotification,
-    addNotification
-  }
+  }, [isAuthenticated])
 
   return (
-    <NotificationContext.Provider value={value}>
+    <NotificationContext.Provider value={useNotificationStore()}>
       {children}
     </NotificationContext.Provider>
   )
