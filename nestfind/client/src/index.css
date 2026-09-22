@@ -1,0 +1,219 @@
+/* nestfind/nestfind/client/src/index.css */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+
+/* ── Base ── */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-dark text-white;
+    font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #07080f;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2a2b3a;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #c9a84c55;
+  }
+
+  ::selection {
+    background: rgba(201, 168, 76, 0.25);
+    color: #fff;
+  }
+
+  input[type='date']::-webkit-calendar-picker-indicator {
+    filter: invert(0.5);
+    cursor: pointer;
+  }
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-box-shadow: 0 0 0 1000px #13141f inset !important;
+    -webkit-text-fill-color: #fff !important;
+    caret-color: #fff;
+  }
+}
+
+/* ── Components ── */
+@layer components {
+  .font-display {
+    font-family: 'Playfair Display', Georgia, serif;
+  }
+
+  /* Gold Cursor */
+  .cursor-dot {
+    width: 8px;
+    height: 8px;
+    background: #c9a84c;
+    border-radius: 50%;
+    position: fixed;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    z-index: 9999;
+    transform: translate(-50%, -50%);
+    transition: width 0.15s, height 0.15s;
+    mix-blend-mode: difference;
+  }
+  .cursor-ring {
+    width: 32px;
+    height: 32px;
+    border: 2px solid rgba(201, 168, 76, 0.6);
+    border-radius: 50%;
+    position: fixed;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    z-index: 9998;
+    transform: translate(-50%, -50%);
+    transition: width 0.2s, height 0.2s, border-color 0.2s;
+  }
+  @media (pointer: coarse) {
+    .cursor-dot,
+    .cursor-ring {
+      display: none !important;
+    }
+    * {
+      cursor: auto !important;
+    }
+  }
+
+  /* Skeleton */
+  .skeleton {
+    background: linear-gradient(90deg, #1a1b26 25%, #22233a 50%, #1a1b26 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s infinite;
+    border-radius: 8px;
+    display: block;
+  }
+  @keyframes skeleton-shimmer {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -200% 0;
+    }
+  }
+
+  /* Prose Dark */
+  .prose-dark p {
+    @apply text-gray-300 leading-relaxed mb-4;
+  }
+  .prose-dark h1,
+  .prose-dark h2,
+  .prose-dark h3 {
+    @apply text-white font-bold font-display mb-3;
+  }
+  .prose-dark ul,
+  .prose-dark ol {
+    @apply text-gray-300 pl-5 mb-4;
+  }
+  .prose-dark li {
+    @apply mb-1.5;
+  }
+  .prose-dark strong {
+    @apply text-white;
+  }
+  .prose-dark a {
+    @apply text-yellow-400 hover:underline;
+  }
+  .prose-dark blockquote {
+    @apply border-l-4 border-yellow-500 pl-4 italic text-gray-400;
+  }
+
+  /* Animate pulse gold */
+  .animate-pulse-gold {
+    animation: pulse-gold 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  @keyframes pulse-gold {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgba(201, 168, 76, 0.4);
+    }
+    50% {
+      box-shadow: 0 0 0 12px rgba(201, 168, 76, 0);
+    }
+  }
+
+  /* Animate fade in */
+  .animate-fade-in {
+    animation: fadeIn 0.4s ease-out forwards;
+  }
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* ── Utilities ── */
+@layer utilities {
+  .bg-dark {
+    background-color: #07080f;
+  }
+  .bg-surface-card {
+    background-color: #13141f;
+  }
+  .bg-surface-light {
+    background-color: #1a1b26;
+  }
+  .bg-surface-border {
+    background-color: #2a2b3a;
+  }
+
+  .border-surface-border {
+    border-color: #2a2b3a;
+  }
+  .border-surface-card {
+    border-color: #13141f;
+  }
+
+  .text-surface-border {
+    color: #2a2b3a;
+  }
+
+  .shadow-gold {
+    box-shadow: 0 4px 20px rgba(201, 168, 76, 0.25);
+  }
+  .shadow-gold-lg {
+    box-shadow: 0 8px 32px rgba(201, 168, 76, 0.35);
+  }
+  .shadow-card {
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  }
+
+  .hover\:shadow-gold:hover {
+    box-shadow: 0 4px 20px rgba(201, 168, 76, 0.25);
+  }
+}
