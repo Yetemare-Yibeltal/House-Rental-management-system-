@@ -4,126 +4,89 @@ import {
   createContext,
   useContext,
   useState,
-  useEffect,
-  useCallback
+  useCallback,
+  useEffect
 } from 'react'
+import { create } from 'zustand'
 import authApi from '../api/authApi'
-import {
-  getAccessToken,
-  setAccessToken,
-  clearAuthData,
-  getStoredUser,
-  setStoredUser
-} from '../utils/tokenService'
+import { tokenService } from '../utils/tokenService'
 
-const AuthContext = createContext(null)
+// ── Zustand store ──────────────────────────────────────────────────────────
+export const useAuthStore = create((set, get) => ({
+  user: null,
+  isAuthenticated: false,
+  isLoading: false,
+  isInitialized: false,
+  error: null,
 
-export const useAuthStore = () => {
-  const context = useContext(AuthContext)
-  if (!context) throw new Error('useAuthStore must be used within AuthProvider')
-  return context
-}
+  // Derived role helpers
+  get isAdmin () {
+    return get().user?.role === 'admin'
+  },
+  get isLandlord () {
+    return get().user?.role === 'landlord'
+  },
+  get isTenant () {
+    return get().user?.role === 'tenant'
+  },
 
-export const AuthProvider = ({ children }) => {
-  const [user, setUserState] = useState(() => getStoredUser())
-  const [isAuthenticated, setIsAuthenticated] = useState(
-    () => !!getAccessToken()
-  )
-  const [isLoading, setIsLoading] = useState(true)
-  const [isInitialized, setIsInitialized] = useState(false)
-
-  const setUser = useCallback(userData => {
-    if (userData && typeof userData === 'function') {
-      setUserState(prev => {
-        const updated = userData(prev)
-        setStoredUser(updated)
-        return updated
-      })
-    } else {
-      setUserState(userData)
-      setStoredUser(userData)
+  initialize: async () => {
+    const token = tokenService.getAccessToken()
+    if (!token || tokenService.isTokenExpired(token)) {
+      set({ isInitialized: true, isAuthenticated: false, user: null })
+      return
     }
-  }, [])
-
-  const setAuthenticated = useCallback(value => {
-    setIsAuthenticated(value)
-  }, [])
-
-  const clearUser = useCallback(() => {
-    setUserState(null)
-    setIsAuthenticated(false)
-    clearAuthData()
-  }, [])
-
-  const refreshUser = useCallback(async () => {
+    set({ isLoading: true })
     try {
       const response = await authApi.getMe()
-      const freshUser = response.data.data.user
-      setUser(freshUser)
-      return freshUser
+      set({
+        user: response.data.data,
+        isAuthenticated: true,
+        isInitialized: true,
+        isLoading: false
+      })
     } catch {
-      return null
+      tokenService.clearAuthData()
+      set({
+        isInitialized: true,
+        isAuthenticated: false,
+        user: null,
+        isLoading: false
+      })
     }
-  }, [setUser])
+  },
 
-  // Initialize — verify token and load user on app start
-  useEffect(() => {
-    const initialize = async () => {
-      setIsLoading(true)
-      const token = getAccessToken()
+  setUser: user => set({ user, isAuthenticated: !!user }),
 
-      if (!token) {
-        setIsLoading(false)
-        setIsInitialized(true)
-        return
-      }
+  logout: async () => {
+    try {
+      await authApi.logout()
+    } catch {}
+    tokenService.clearAuthData()
+    set({ user: null, isAuthenticated: false })
+    window.location.href = '/login'
+  },
 
-      try {
-        const response = await authApi.getMe()
-        const freshUser = response.data.data.user
-        setUser(freshUser)
-        setIsAuthenticated(true)
-      } catch (err) {
-        if (err.response?.status === 401) {
-          try {
-            const refreshResponse = await authApi.refreshToken()
-            const { accessToken } = refreshResponse.data.data
-            setAccessToken(accessToken)
-            const userResponse = await authApi.getMe()
-            setUser(userResponse.data.data.user)
-            setIsAuthenticated(true)
-          } catch {
-            clearAuthData()
-            setIsAuthenticated(false)
-            setUserState(null)
-          }
-        }
-      } finally {
-        setIsLoading(false)
-        setIsInitialized(true)
-      }
-    }
-
-    initialize()
-  }, [])
-
-  const value = {
-    user,
-    isAuthenticated,
-    isLoading,
-    isInitialized,
-    setUser,
-    setAuthenticated,
-    clearUser,
-    refreshUser,
-    isAdmin: user?.role === 'admin',
-    isLandlord: user?.role === 'landlord',
-    isTenant: user?.role === 'tenant',
-    isKYCVerified: user?.isKYCVerified || false,
-    isEmailVerified: user?.isEmailVerified || false
+  refreshUser: async () => {
+    try {
+      const response = await authApi.getMe()
+      set({ user: response.data.data })
+    } catch {}
   }
+}))
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+// ── Context (for components that prefer context over zustand) ──────────────
+const AuthContext = createContext(null)
+
+export const AuthProvider = ({ children }) => {
+  const store = useAuthStore()
+  return <AuthContext.Provider value={store}>{children}</AuthContext.Provider>
+}
+
+export const useAuth = () => {
+  const ctx = useContext(AuthContext)
+  if (!ctx) throw new Error('useAuth must be used inside AuthProvider')
+  return ctx
 }
 
 export default AuthContext
