@@ -1,92 +1,110 @@
 // nestfind/nestfind/client/src/context/AuthContext.jsx
 
-import {
-  createContext,
-  useContext,
-  useState,
-  useCallback,
-  useEffect
-} from 'react'
+import { createContext, useContext } from 'react'
 import { create } from 'zustand'
 import authApi from '../api/authApi'
-import { tokenService } from '../utils/tokenService'
+import {
+  getAccessToken,
+  setTokens,
+  clearAuthData,
+  isTokenExpired
+} from '../utils/tokenService'
 
-// ── Zustand store ──────────────────────────────────────────────────────────
 export const useAuthStore = create((set, get) => ({
   user: null,
   isAuthenticated: false,
   isLoading: false,
   isInitialized: false,
-  error: null,
-
-  // Derived role helpers
-  get isAdmin () {
-    return get().user?.role === 'admin'
-  },
-  get isLandlord () {
-    return get().user?.role === 'landlord'
-  },
-  get isTenant () {
-    return get().user?.role === 'tenant'
-  },
+  isAdmin: false,
+  isLandlord: false,
+  isTenant: false,
 
   initialize: async () => {
-    const token = tokenService.getAccessToken()
-    if (!token || tokenService.isTokenExpired(token)) {
+    const token = getAccessToken()
+    if (!token || isTokenExpired(token)) {
       set({ isInitialized: true, isAuthenticated: false, user: null })
       return
     }
     set({ isLoading: true })
     try {
       const response = await authApi.getMe()
+      const user = response.data.data
       set({
-        user: response.data.data,
+        user,
         isAuthenticated: true,
         isInitialized: true,
-        isLoading: false
+        isLoading: false,
+        isAdmin: user?.role === 'admin',
+        isLandlord: user?.role === 'landlord',
+        isTenant: user?.role === 'tenant'
       })
     } catch {
-      tokenService.clearAuthData()
+      clearAuthData()
       set({
         isInitialized: true,
         isAuthenticated: false,
         user: null,
-        isLoading: false
+        isLoading: false,
+        isAdmin: false,
+        isLandlord: false,
+        isTenant: false
       })
     }
   },
 
-  setUser: user => set({ user, isAuthenticated: !!user }),
+  setUser: user =>
+    set({
+      user,
+      isAuthenticated: !!user,
+      isAdmin: user?.role === 'admin',
+      isLandlord: user?.role === 'landlord',
+      isTenant: user?.role === 'tenant'
+    }),
+
+  setTokensAndUser: (accessToken, refreshToken, user) => {
+    setTokens(accessToken, refreshToken)
+    set({
+      user,
+      isAuthenticated: true,
+      isAdmin: user?.role === 'admin',
+      isLandlord: user?.role === 'landlord',
+      isTenant: user?.role === 'tenant'
+    })
+  },
 
   logout: async () => {
     try {
       await authApi.logout()
     } catch {}
-    tokenService.clearAuthData()
-    set({ user: null, isAuthenticated: false })
+    clearAuthData()
+    set({
+      user: null,
+      isAuthenticated: false,
+      isAdmin: false,
+      isLandlord: false,
+      isTenant: false
+    })
     window.location.href = '/login'
   },
 
   refreshUser: async () => {
     try {
       const response = await authApi.getMe()
-      set({ user: response.data.data })
+      const user = response.data.data
+      set({
+        user,
+        isAdmin: user?.role === 'admin',
+        isLandlord: user?.role === 'landlord',
+        isTenant: user?.role === 'tenant'
+      })
     } catch {}
   }
 }))
 
-// ── Context (for components that prefer context over zustand) ──────────────
 const AuthContext = createContext(null)
 
-export const AuthProvider = ({ children }) => {
-  const store = useAuthStore()
-  return <AuthContext.Provider value={store}>{children}</AuthContext.Provider>
-}
-
-export const useAuth = () => {
-  const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth must be used inside AuthProvider')
-  return ctx
-}
+export const AuthProvider = ({ children }) => (
+  <AuthContext.Provider value={null}>{children}</AuthContext.Provider>
+)
 
 export default AuthContext
