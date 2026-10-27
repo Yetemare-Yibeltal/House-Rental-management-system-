@@ -134,3 +134,5 @@ export const useNotifications = () => {
     loadMore,
   };
 };
+
+export default useNotifications;

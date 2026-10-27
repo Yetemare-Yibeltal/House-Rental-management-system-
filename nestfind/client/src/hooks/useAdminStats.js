@@ -47,3 +47,5 @@ export const useAdminStats = () => {
     refresh,
   };
 };
+
+export default useAdminStats;

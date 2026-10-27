@@ -83,3 +83,5 @@ export const usePayment = () => {
     getPaymentReceipt,
   };
 };
+
+export default usePayment;

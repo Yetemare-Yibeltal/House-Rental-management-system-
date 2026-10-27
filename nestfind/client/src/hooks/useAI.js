@@ -176,3 +176,5 @@ export const useAI = () => {
     smartSearch,
   };
 };
+
+export default useAI;

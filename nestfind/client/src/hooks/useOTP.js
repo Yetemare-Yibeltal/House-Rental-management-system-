@@ -137,3 +137,5 @@ export const useOTP = (purpose = "email_verification") => {
     reset,
   };
 };
+
+export default useOTP;

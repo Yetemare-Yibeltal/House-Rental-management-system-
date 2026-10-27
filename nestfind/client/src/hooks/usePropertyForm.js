@@ -232,3 +232,5 @@ export const usePropertyForm = (propertyId = null) => {
     setValues,
   };
 };
+
+export default usePropertyForm;

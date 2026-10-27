@@ -106,3 +106,5 @@ export const useSocketEvent = (event, handler, deps = []) => {
     return () => socket.off(event, listener);
   }, [socket, event, ...deps]);
 };
+
+export default useSocket;

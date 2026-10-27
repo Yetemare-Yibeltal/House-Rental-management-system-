@@ -58,3 +58,5 @@ export const useCountdown = (initialSeconds = 60) => {
     formatTime,
   };
 };
+
+export default useCountdown;

@@ -271,3 +271,5 @@ export const useAuth = () => {
     submitKYC,
   };
 };
+
+export default useAuth;

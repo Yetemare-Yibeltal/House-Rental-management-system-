@@ -162,3 +162,5 @@ export const useVoice = (options = {}) => {
     getAvailableVoices,
   };
 };
+
+export default useVoice;

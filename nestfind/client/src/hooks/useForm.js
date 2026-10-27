@@ -145,3 +145,5 @@ export const useForm = (initialValues = {}, validationRules = {}) => {
     setErrors,
   };
 };
+
+export default useForm;
