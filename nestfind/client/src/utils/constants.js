@@ -109,6 +109,14 @@ export const PAYMENT_METHODS = [
   { value: "cash", label: "💵 Cash" },
 ];
 
+export const PAYMENT_TYPES = [
+  { value: "monthly_rent", label: "Monthly Rent" },
+  { value: "security_deposit", label: "Security Deposit" },
+  { value: "utility_bill", label: "Utility Bill" },
+  { value: "late_fee", label: "Late Fee" },
+  { value: "maintenance_fee", label: "Maintenance Fee" },
+];
+
 export const ROUTES = {
   HOME: "/",
   LOGIN: "/login",
