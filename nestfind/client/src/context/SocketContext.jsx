@@ -103,3 +103,5 @@ export const useSocketContext = () => {
 }
 
 export default SocketContext
+
+export const useSocketStore = useSocketContext;
