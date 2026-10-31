@@ -8,6 +8,9 @@ import { AuthProvider, useAuthStore } from './context/AuthContext'
 import { SocketProvider } from './context/SocketContext'
 import { NotificationProvider } from './context/NotificationContext'
 import { AIProvider } from './context/AIContext'
+import PrivacyPage from './pages/public/PrivacyPage'
+import TermsPage from './pages/public/TermsPage'
+import LandlordMaintenance from './pages/landlord/LandlordMaintenance'
 
 // Guards
 import ProtectedRoute from './components/common/ProtectedRoute'
@@ -138,6 +141,17 @@ const AppContent = () => {
         <Route path='/verify-otp' element={<OTPPage />} />
         <Route path='/forgot-password' element={<ForgotPasswordPage />} />
         <Route path='/reset-password' element={<ResetPasswordPage />} />
+
+<Route path="/privacy" element={<PrivacyPage />} />
+<Route path="/terms" element={<TermsPage />} />
+<Route
+  path="/landlord/maintenance"
+  element={
+    <RoleRoute roles={['landlord']}>
+      <LandlordMaintenance />
+    </RoleRoute>
+  }
+/>
 
         {/* Protected common routes */}
         <Route
