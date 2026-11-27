@@ -1,30 +1,3 @@
-/**
- * NestFind API Response Helpers
- *
- * Every API response follows this shape:
- *
- * Success:
- * {
- *   success: true,
- *   message: "Human readable message",
- *   data: { ... } or [ ... ],
- *   pagination: { page, limit, total, pages } // only on list endpoints
- * }
- *
- * Error:
- * {
- *   success: false,
- *   message: "Human readable error message",
- *   errors: [ { field, message } ] // only on validation errors
- *   stack: "..." // only in development
- * }
- */
-
-// ── SUCCESS RESPONSES ────────────────────────────────────────────────────────
-
-/**
- * 200 OK — General success
- */
 const sendSuccess = (res, message, data = null, statusCode = 200) => {
   const response = {
     success: true,
@@ -214,7 +187,7 @@ const getSort = (query, options = {}) => {
   return { [sortField]: sortOrder };
 };
 
-/**
+/*
  * Format express-validator errors into our standard shape
  * Usage: const errors = formatValidationErrors(validationResult(req))
  */
@@ -228,6 +201,7 @@ const formatValidationErrors = (validationResult) => {
 
 module.exports = {
   sendSuccess,
+  sendError,
   sendPaginated,
   sendCreated,
   sendNoContent,

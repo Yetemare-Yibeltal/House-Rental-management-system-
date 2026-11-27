@@ -1,0 +1,1770 @@
+========== AUTH CONTROLLER ==========
+// nestfind/nestfind/server/src/controllers/authController.js
+
+const { validationResult } = require("express-validator");
+const User = require("../models/User");
+const KYCVerification = require("../models/KYCVerification");
+const AuditLog = require("../models/AuditLog");
+const jwtService = require("../services/jwtService");
+const otpService = require("../services/otpService");
+const emailService = require("../services/emailService");
+const cloudinaryService = require("../services/cloudinaryService");
+const notificationService = require("../services/notificationService");
+const asyncHandler = require("../utils/asyncHandler");
+const {
+  sendSuccess,
+  sendError,
+  sendValidationError,
+} = require("../utils/apiResponse");
+const logger = require("../utils/logger");
+
+// ── REGISTER ──────────────────────────────────────────────────────────────────
+const register = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const {
+    firstName,
+    lastName,
+    email,
+    password,
+    role = "tenant",
+    phone,
+    referralCode,
+  } = req.body;
+
+  // Check if email already exists
+  const existingUser = await User.findOne({ email }).setOptions({
+    includeDeleted: true,
+  });
+  if (existingUser) {
+    return sendError(
+      res,
+      "An account with this email address already exists. Please login or use a different email.",
+      409,
+    );
+  }
+
+  // Validate referral code if provided
+  let referredBy = null;
+  if (referralCode) {
+    const referrer = await User.findOne({ referralCode });
+    if (referrer) {
+      referredBy = referrer._id;
+      await User.findByIdAndUpdate(referrer._id, {
+        $inc: { referralCount: 1 },
+      });
+    }
+  }
+
+  // Create user
+  const user = await User.create({
+    firstName,
+    lastName,
+    email,
+    password,
+    role,
+    phone,
+    referredBy,
+    status: "pending",
+    isEmailVerified: false,
+  });
+
+  // Send email verification OTP
+  await otpService.sendOTP({
+    userId: user._id,
+    purpose: "email_verification",
+    email: user.email,
+    firstName: user.firstName,
+    deliveryMethod: "email",
+  });
+
+  // Send welcome email
+  await emailService.sendWelcomeEmail(user.email, user.firstName, user.role);
+
+  // Create welcome notification
+  await notificationService.sendNotification({
+    recipientId: user._id,
+    type: "welcome",
+    data: { firstName: user.firstName },
+    channels: { inApp: true },
+  });
+
+  // Log registration
+  await AuditLog.logFromRequest(req, "user_registered", {
+    resourceType: "User",
+    resourceId: user._id,
+    description: `New ${role} registered: ${email}`,
+  });
+
+  logger.info(`New user registered: ${email}, role: ${role}`);
+
+  return sendSuccess(
+    res,
+    "Account created successfully. Please check your email for a verification code.",
+    {
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        role: user.role,
+        isEmailVerified: user.isEmailVerified,
+      },
+    },
+    201,
+  );
+});
+
+// ── VERIFY EMAIL ──────────────────────────────────────────────────────────────
+const verifyEmail = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const { otp, purpose } = req.body;
+  const userId = req.user._id;
+
+  const result = await otpService.verifyOTP(
+    userId,
+    purpose || "email_verification",
+    otp,
+  );
+
+  if (!result.success) {
+    return sendError(res, result.error, 400, {
+      remainingAttempts: result.remainingAttempts,
+    });
+  }
+
+  // Update user status
+  await User.findByIdAndUpdate(userId, {
+    isEmailVerified: true,
+    status: "active",
+  });
+
+  await AuditLog.logFromRequest(req, "email_verified", {
+    resourceType: "User",
+    resourceId: userId,
+  });
+
+  return sendSuccess(
+    res,
+    "Email verified successfully. Your account is now active.",
+  );
+});
+
+// ── LOGIN ─────────────────────────────────────────────────────────────────────
+const login = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const { email, password, rememberMe = false } = req.body;
+
+  // Find user with password
+  const user = await User.findByEmail(email);
+
+  if (!user) {
+    await AuditLog.logFromRequest(req, "user_login_failed", {
+      description: `Login failed: email not found (${email})`,
+      severity: "warning",
+      status: "failure",
+    });
+    return sendError(
+      res,
+      "Invalid email or password. Please check your credentials and try again.",
+      401,
+    );
+  }
+
+  // Check if account is locked
+  if (user.isAccountLocked()) {
+    const lockExpiry = new Date(user.lockUntil);
+    return sendError(
+      res,
+      `Your account is temporarily locked due to too many failed login attempts. Please try again after ${lockExpiry.toLocaleTimeString()}.`,
+      423,
+    );
+  }
+
+  // Check password
+  const isPasswordValid = await user.comparePassword(password);
+  if (!isPasswordValid) {
+    await user.incrementFailedLogins();
+    await AuditLog.logFromRequest(req, "user_login_failed", {
+      resourceType: "User",
+      resourceId: user._id,
+      description: `Invalid password attempt for ${email}`,
+      severity: "warning",
+      status: "failure",
+    });
+    const attemptsLeft = Math.max(0, 5 - user.failedLoginAttempts);
+    return sendError(
+      res,
+      `Invalid email or password.${attemptsLeft <= 2 ? ` ${attemptsLeft} attempt(s) remaining before account lock.` : ""}`,
+      401,
+    );
+  }
+
+  // Check account status
+  if (user.status === "suspended") {
+    return sendError(
+      res,
+      "Your account has been suspended. Please contact support@nestfind.et for assistance.",
+      403,
+    );
+  }
+  if (user.status === "deactivated") {
+    return sendError(
+      res,
+      "Your account has been deactivated. Please contact support to reactivate.",
+      403,
+    );
+  }
+
+  // Reset failed logins and update login info
+  await user.resetFailedLogins();
+  await User.findByIdAndUpdate(user._id, {
+    lastLoginIP: req.ip,
+    lastActiveAt: new Date(),
+  });
+
+  // Generate token pair
+  const deviceInfo = jwtService.extractDeviceInfo(req);
+  const tokens = await jwtService.generateTokenPair(user, deviceInfo, req.ip);
+
+  // Set refresh token as httpOnly cookie
+  res.cookie("refreshToken", tokens.refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: rememberMe ? 30 * 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000,
+  });
+
+  await AuditLog.logFromRequest(req, "user_logged_in", {
+    resourceType: "User",
+    resourceId: user._id,
+    description: `User logged in: ${email}`,
+  });
+
+  return sendSuccess(res, "Login successful. Welcome back!", {
+    user: {
+      id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      role: user.role,
+      avatar: user.avatarUrl,
+      isEmailVerified: user.isEmailVerified,
+      isKYCVerified: user.isKYCVerified,
+      kycStatus: user.kycStatus,
+      status: user.status,
+      aiPreferences: user.aiPreferences,
+    },
+    tokens: {
+      accessToken: tokens.accessToken,
+      accessTokenExpiresIn: tokens.accessTokenExpiresIn,
+    },
+  });
+});
+
+// ── REFRESH TOKEN ─────────────────────────────────────────────────────────────
+const refreshToken = asyncHandler(async (req, res) => {
+  const token = req.cookies?.refreshToken || req.body?.refreshToken;
+
+  if (!token) {
+    return sendError(
+      res,
+      "Refresh token is required. Please login again.",
+      401,
+    );
+  }
+
+  const { valid, user, tokenRecord, error } =
+    await jwtService.verifyRefreshToken(token);
+
+  if (!valid) {
+    res.clearCookie("refreshToken");
+    return sendError(
+      res,
+      error || "Invalid or expired session. Please login again.",
+      401,
+    );
+  }
+
+  // Mark token as used
+  await tokenRecord.markAsUsed();
+
+  // Rotate tokens
+  const deviceInfo = jwtService.extractDeviceInfo(req);
+  const tokens = await jwtService.rotateRefreshToken(
+    token,
+    user,
+    deviceInfo,
+    req.ip,
+  );
+
+  // Set new refresh token cookie
+  res.cookie("refreshToken", tokens.refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
+  return sendSuccess(res, "Token refreshed successfully.", {
+    accessToken: tokens.accessToken,
+    accessTokenExpiresIn: tokens.accessTokenExpiresIn,
+  });
+});
+
+// ── LOGOUT ────────────────────────────────────────────────────────────────────
+const logout = asyncHandler(async (req, res) => {
+  const token = req.cookies?.refreshToken || req.body?.refreshToken;
+
+  if (token) {
+    await jwtService.revokeToken(token, "logout");
+  }
+
+  res.clearCookie("refreshToken");
+
+  await AuditLog.logFromRequest(req, "user_logged_out", {
+    resourceType: "User",
+    resourceId: req.user?._id,
+  });
+
+  return sendSuccess(res, "Logged out successfully.");
+});
+
+// ── LOGOUT ALL DEVICES ────────────────────────────────────────────────────────
+const logoutAll = asyncHandler(async (req, res) => {
+  await jwtService.revokeAllUserTokens(req.user._id, "logout");
+  res.clearCookie("refreshToken");
+  return sendSuccess(res, "Logged out from all devices successfully.");
+});
+
+// ── FORGOT PASSWORD ───────────────────────────────────────────────────────────
+const forgotPassword = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const { email } = req.body;
+  const user = await User.findOne({ email });
+
+  // Always return success to prevent email enumeration
+  if (!user) {
+    return sendSuccess(
+      res,
+      "If an account exists with this email, you will receive a password reset code shortly.",
+    );
+  }
+
+  await otpService.sendOTP({
+    userId: user._id,
+    purpose: "password_reset",
+    email: user.email,
+    firstName: user.firstName,
+    deliveryMethod: "email",
+    expiryMinutes: 60,
+  });
+
+  await AuditLog.logFromRequest(req, "password_reset_requested", {
+    resourceType: "User",
+    resourceId: user._id,
+  });
+
+  return sendSuccess(
+    res,
+    "If an account exists with this email, you will receive a password reset code shortly.",
+  );
+});
+
+// ── RESET PASSWORD ────────────────────────────────────────────────────────────
+const resetPassword = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const { email, otp, password } = req.body;
+
+  const user = await User.findOne({ email });
+  if (!user) {
+    return sendError(
+      res,
+      "Invalid request. Please request a new password reset.",
+      400,
+    );
+  }
+
+  const result = await otpService.verifyOTP(user._id, "password_reset", otp);
+  if (!result.success) {
+    return sendError(res, result.error, 400);
+  }
+
+  // Update password
+  user.password = password;
+  user.passwordChangedAt = new Date();
+  await user.save();
+
+  // Revoke all existing tokens
+  await jwtService.revokeAllUserTokens(user._id, "password_change");
+
+  await emailService.sendEmail({
+    to: user.email,
+    subject: "Your NestFind password has been changed",
+    html: `<p>Hello ${user.firstName},</p><p>Your password was successfully changed. If you did not make this change, please contact us immediately at support@nestfind.et</p>`,
+  });
+
+  await AuditLog.logFromRequest(req, "password_reset_completed", {
+    resourceType: "User",
+    resourceId: user._id,
+  });
+
+  return sendSuccess(
+    res,
+    "Password reset successfully. Please login with your new password.",
+  );
+});
+
+// ── CHANGE PASSWORD ───────────────────────────────────────────────────────────
+const changePassword = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const { currentPassword, newPassword } = req.body;
+  const user = await User.findById(req.user._id).select("+password");
+
+  const isValid = await user.comparePassword(currentPassword);
+  if (!isValid) {
+    return sendError(res, "Current password is incorrect.", 400);
+  }
+
+  user.password = newPassword;
+  user.passwordChangedAt = new Date();
+  await user.save();
+
+  // Revoke all other tokens (keep current session)
+  const currentToken = req.cookies?.refreshToken;
+  await jwtService.revokeAllUserTokens(user._id, "password_change");
+
+  await AuditLog.logFromRequest(req, "password_reset_completed", {
+    resourceType: "User",
+    resourceId: user._id,
+    description: "Password changed by user",
+  });
+
+  return sendSuccess(
+    res,
+    "Password changed successfully. Please login again with your new password.",
+  );
+});
+
+// ── GET CURRENT USER ──────────────────────────────────────────────────────────
+const getMe = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id).select(
+    "-password -passwordResetToken -emailVerificationToken -failedLoginAttempts -lockUntil",
+  );
+
+  if (!user) {
+    return sendError(res, "User not found.", 404);
+  }
+
+  return sendSuccess(res, "User profile retrieved successfully.", { user });
+});
+
+// ── UPDATE PROFILE ────────────────────────────────────────────────────────────
+const updateProfile = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const allowedFields = [
+    "firstName",
+    "lastName",
+    "phone",
+    "bio",
+    "dateOfBirth",
+    "gender",
+    "occupation",
+    "address",
+  ];
+
+  const updates = {};
+  allowedFields.forEach((field) => {
+    if (req.body[field] !== undefined) {
+      updates[field] = req.body[field];
+    }
+  });
+
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    { $set: updates },
+    { new: true, runValidators: true },
+  ).select("-password -passwordResetToken -emailVerificationToken");
+
+  return sendSuccess(res, "Profile updated successfully.", { user });
+});
+
+// ── UPLOAD AVATAR ─────────────────────────────────────────────────────────────
+const uploadAvatar = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    return sendError(res, "Please upload an image file.", 400);
+  }
+
+  // Delete old avatar if exists
+  const currentUser = await User.findById(req.user._id);
+  if (currentUser.avatar?.public_id) {
+    await cloudinaryService.deleteImage(currentUser.avatar.public_id);
+  }
+
+  // Upload new avatar
+  const result = await cloudinaryService.uploadAvatar(
+    req.file.buffer,
+    req.user._id.toString(),
+  );
+
+  if (!result.success) {
+    return sendError(res, "Failed to upload avatar. Please try again.", 500);
+  }
+
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    {
+      avatar: {
+        public_id: result.public_id,
+        url: result.secureUrl,
+      },
+    },
+    { new: true },
+  ).select("-password");
+
+  return sendSuccess(res, "Avatar uploaded successfully.", {
+    avatar: { url: result.secureUrl, public_id: result.public_id },
+    user,
+  });
+});
+
+// ── SEND OTP ──────────────────────────────────────────────────────────────────
+const sendOTP = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const { purpose } = req.body;
+  const user = req.user;
+
+  const result = await otpService.sendOTP({
+    userId: user._id,
+    purpose,
+    email: user.email,
+    phone: user.phone,
+    firstName: user.firstName,
+    deliveryMethod: "email",
+  });
+
+  if (!result.success) {
+    return sendError(res, result.error, 400, {
+      waitSeconds: result.waitSeconds,
+    });
+  }
+
+  return sendSuccess(res, result.message, {
+    expiresInMinutes: result.expiresInMinutes,
+  });
+});
+
+// ── VERIFY OTP ────────────────────────────────────────────────────────────────
+const verifyOTP = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const { otp, purpose } = req.body;
+  const result = await otpService.verifyOTP(req.user._id, purpose, otp);
+
+  if (!result.success) {
+    return sendError(res, result.error, 400, {
+      remainingAttempts: result.remainingAttempts,
+    });
+  }
+
+  // Handle post-verification actions
+  if (purpose === "phone_verification") {
+    await User.findByIdAndUpdate(req.user._id, { isPhoneVerified: true });
+  }
+
+  return sendSuccess(res, "Verification successful.");
+});
+
+// ── UPDATE NOTIFICATION PREFERENCES ──────────────────────────────────────────
+const updateNotificationPreferences = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const allowedPrefs = [
+    "emailNotifications",
+    "smsNotifications",
+    "pushNotifications",
+    "paymentReminders",
+    "bookingUpdates",
+    "maintenanceUpdates",
+    "newMessages",
+    "marketingEmails",
+    "aiRecommendationEmails",
+  ];
+
+  const updates = {};
+  allowedPrefs.forEach((pref) => {
+    if (req.body[pref] !== undefined) {
+      updates[`notificationPreferences.${pref}`] = req.body[pref];
+    }
+  });
+
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    { $set: updates },
+    { new: true },
+  ).select("notificationPreferences");
+
+  return sendSuccess(res, "Notification preferences updated.", {
+    notificationPreferences: user.notificationPreferences,
+  });
+});
+
+// ── UPDATE AI PREFERENCES ─────────────────────────────────────────────────────
+const updateAIPreferences = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const allowedPrefs = [
+    "voiceLanguage",
+    "voiceSpeed",
+    "voiceEnabled",
+    "preferredCities",
+    "preferredSubCities",
+    "preferredPropertyTypes",
+    "preferredAmenities",
+    "budgetMin",
+    "budgetMax",
+    "preferredBedrooms",
+    "aiChatEnabled",
+    "aiRecommendationsEnabled",
+    "naturalLanguageSearchEnabled",
+  ];
+
+  const updates = {};
+  allowedPrefs.forEach((pref) => {
+    if (req.body[pref] !== undefined) {
+      updates[`aiPreferences.${pref}`] = req.body[pref];
+    }
+  });
+
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    { $set: updates },
+    { new: true },
+  ).select("aiPreferences");
+
+  return sendSuccess(res, "AI preferences updated.", {
+    aiPreferences: user.aiPreferences,
+  });
+});
+
+// ── SUBMIT KYC ────────────────────────────────────────────────────────────────
+const submitKYC = asyncHandler(async (req, res) => {
+  const { personalInfo, primaryDocumentType } = req.body;
+
+  if (!personalInfo || !primaryDocumentType) {
+    return sendError(
+      res,
+      "Personal information and document type are required.",
+      400,
+    );
+  }
+
+  if (!req.files || Object.keys(req.files).length === 0) {
+    return sendError(res, "Please upload at least one identity document.", 400);
+  }
+
+  // Check for existing KYC
+  let kyc = await KYCVerification.findOne({ user: req.user._id });
+
+  if (kyc && kyc.status === "approved") {
+    return sendError(res, "Your identity is already verified.", 400);
+  }
+
+  // Upload documents to Cloudinary
+  const documents = {};
+  const fileFields = [
+    "nationalId",
+    "selfie",
+    "proofOfAddress",
+    "proofOfOwnership",
+  ];
+
+  for (const field of fileFields) {
+    if (req.files[field] && req.files[field][0]) {
+      const uploadResult = await cloudinaryService.uploadKYCDocument(
+        req.files[field][0].buffer,
+        req.user._id.toString(),
+        field,
+      );
+      if (uploadResult.success) {
+        documents[field] = {
+          public_id: uploadResult.public_id,
+          url: uploadResult.secureUrl,
+        };
+      }
+    }
+  }
+
+  const kycData = {
+    user: req.user._id,
+    personalInfo,
+    primaryDocumentType,
+    documents,
+    consentGiven: true,
+    consentGivenAt: new Date(),
+    ipAddress: req.ip,
+    userAgent: req.get("User-Agent"),
+  };
+
+  if (kyc) {
+    Object.assign(kyc, kycData);
+  } else {
+    kyc = new KYCVerification(kycData);
+  }
+
+  await kyc.submit(req.ip, req.get("User-Agent"));
+
+  await User.findByIdAndUpdate(req.user._id, {
+    kycStatus: "pending",
+    kycSubmittedAt: new Date(),
+  });
+
+  await notificationService.sendNotification({
+    recipientId: req.user._id,
+    type: "kyc_submitted",
+    data: {},
+    channels: { inApp: true },
+  });
+
+  await AuditLog.logFromRequest(req, "user_kyc_submitted", {
+    resourceType: "User",
+    resourceId: req.user._id,
+  });
+
+  return sendSuccess(
+    res,
+    "KYC documents submitted successfully. Our team will review within 24-48 hours.",
+    {
+      kycId: kyc._id,
+      status: kyc.status,
+    },
+    201,
+  );
+});
+
+// ── GET KYC STATUS ────────────────────────────────────────────────────────────
+const getKYCStatus = asyncHandler(async (req, res) => {
+  const kyc = await KYCVerification.getUserKYC(req.user._id);
+
+  return sendSuccess(res, "KYC status retrieved.", {
+    kyc: kyc
+      ? {
+          id: kyc._id,
+          status: kyc.status,
+          submittedAt: kyc.submittedAt,
+          reviewedAt: kyc.reviewedAt,
+          approvedAt: kyc.approvedAt,
+          rejectionReasons: kyc.rejectionReasons,
+          reviewNotes: kyc.reviewNotes,
+        }
+      : null,
+    isKYCVerified: req.user.isKYCVerified,
+    kycStatus: req.user.kycStatus,
+  });
+});
+
+// ── GET ACTIVE SESSIONS ───────────────────────────────────────────────────────
+const getActiveSessions = asyncHandler(async (req, res) => {
+  const sessions = await jwtService.getActiveSessions(req.user._id);
+  return sendSuccess(res, "Active sessions retrieved.", { sessions });
+});
+
+// ── DELETE ACCOUNT ────────────────────────────────────────────────────────────
+const deleteAccount = asyncHandler(async (req, res) => {
+  const { otp } = req.body;
+
+  if (!otp) {
+    return sendError(
+      res,
+      "Verification code is required to delete your account.",
+      400,
+    );
+  }
+
+  const result = await otpService.verifyOTP(
+    req.user._id,
+    "account_deletion",
+    otp,
+  );
+  if (!result.success) {
+    return sendError(res, result.error, 400);
+  }
+
+  await User.softDelete(req.user._id);
+  await jwtService.revokeAllUserTokens(req.user._id, "account_suspended");
+  res.clearCookie("refreshToken");
+
+  await AuditLog.logFromRequest(req, "user_deleted", {
+    resourceType: "User",
+    resourceId: req.user._id,
+    description: "Account deleted by user",
+  });
+
+  return sendSuccess(
+    res,
+    "Your account has been deleted. We are sorry to see you go.",
+  );
+});
+
+module.exports = {
+  register,
+  verifyEmail,
+  login,
+  refreshToken,
+  logout,
+  logoutAll,
+  forgotPassword,
+  resetPassword,
+  changePassword,
+  getMe,
+  updateProfile,
+  uploadAvatar,
+  sendOTP,
+  verifyOTP,
+  updateNotificationPreferences,
+  updateAIPreferences,
+  submitKYC,
+  getKYCStatus,
+  getActiveSessions,
+  deleteAccount,
+};
+========== PROPERTY CONTROLLER ==========
+// nestfind/nestfind/server/src/controllers/propertyController.js
+
+const { validationResult } = require("express-validator");
+const Property = require("../models/Property");
+const PropertyImage = require("../models/PropertyImage");
+const SavedProperty = require("../models/SavedProperty");
+const Review = require("../models/Review");
+const Report = require("../models/Report");
+const AuditLog = require("../models/AuditLog");
+const cloudinaryService = require("../services/cloudinaryService");
+const searchService = require("../services/searchService");
+const geocodingService = require("../services/geocodingService");
+const notificationService = require("../services/notificationService");
+const fraudDetectionService = require("../services/ai/fraudDetectionService");
+const asyncHandler = require("../utils/asyncHandler");
+const {
+  sendSuccess,
+  sendError,
+  sendValidationError,
+  sendPaginated,
+} = require("../utils/apiResponse");
+const logger = require("../utils/logger");
+
+// ── GET ALL PROPERTIES (PUBLIC) ───────────────────────────────────────────────
+const getProperties = asyncHandler(async (req, res) => {
+  const {
+    page = 1,
+    limit = 12,
+    keyword,
+    city,
+    subCity,
+    propertyType,
+    minPrice,
+    maxPrice,
+    minBedrooms,
+    maxBedrooms,
+    furnished,
+    amenities,
+    sortBy = "newest",
+    isFeatured,
+    lat,
+    lng,
+    radius,
+  } = req.query;
+
+  const filters = {
+    keyword,
+    city,
+    subCity,
+    propertyType: propertyType ? propertyType.split(",") : [],
+    minPrice: minPrice ? Number(minPrice) : null,
+    maxPrice: maxPrice ? Number(maxPrice) : null,
+    minBedrooms: minBedrooms ? Number(minBedrooms) : null,
+    maxBedrooms: maxBedrooms ? Number(maxBedrooms) : null,
+    furnished,
+    amenities: amenities ? amenities.split(",") : [],
+    isFeatured: isFeatured === "true" ? true : undefined,
+    lat,
+    lng,
+    radius,
+  };
+
+  const result = await searchService.searchProperties(
+    filters,
+    { page: Number(page), limit: Math.min(Number(limit), 50) },
+    sortBy,
+  );
+
+  if (!result.success) {
+    return sendError(res, "Failed to fetch properties.", 500);
+  }
+
+  return sendPaginated(
+    res,
+    "Properties retrieved successfully.",
+    result.properties,
+    {
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+      totalPages: result.totalPages,
+    },
+  );
+});
+
+// ── GET FEATURED PROPERTIES (PUBLIC) ─────────────────────────────────────────
+const getFeaturedProperties = asyncHandler(async (req, res) => {
+  const { limit = 8 } = req.query;
+  const properties = await searchService.getFeaturedProperties(Number(limit));
+  return sendSuccess(res, "Featured properties retrieved.", { properties });
+});
+
+// ── GET SINGLE PROPERTY (PUBLIC) ──────────────────────────────────────────────
+const getProperty = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const property = await Property.findById(id)
+    .populate(
+      "landlord",
+      "firstName lastName avatar phone email landlordProfile isKYCVerified createdAt",
+    )
+    .populate("currentTenant", "firstName lastName avatar");
+
+  if (!property) {
+    return sendError(res, "Property not found.", 404);
+  }
+
+  // Increment view count
+  await Property.incrementViews(id);
+
+  // Check if current user has saved this property
+  let isSaved = false;
+  if (req.user) {
+    isSaved = await SavedProperty.isSaved(req.user._id, id);
+  }
+
+  // Get similar properties
+  const similarProperties = await searchService.getSimilarProperties(
+    property,
+    4,
+  );
+
+  // Get recent reviews
+  const reviews = await Review.getPropertyReviews(id, 1, 5);
+
+  // Get property images
+  const images = await PropertyImage.getPropertyImages(id);
+
+  return sendSuccess(res, "Property retrieved successfully.", {
+    property,
+    isSaved,
+    similarProperties,
+    reviews,
+    images,
+  });
+});
+
+// ── CREATE PROPERTY (LANDLORD) ────────────────────────────────────────────────
+const createProperty = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const landlordId = req.user._id;
+
+  // Check listing limit based on subscription
+  const existingCount = await Property.countDocuments({
+    landlord: landlordId,
+    isDeleted: false,
+    status: { $ne: "unlisted" },
+  });
+
+  if (existingCount >= req.user.maxListings) {
+    return sendError(
+      res,
+      `You have reached your listing limit of ${req.user.maxListings}. Please upgrade your subscription to list more properties.`,
+      403,
+    );
+  }
+
+  // Geocode the address
+  const locationData = req.body.location || {};
+  const coords = await geocodingService.geocodeAddress({
+    address: locationData.address,
+    subCity: locationData.subCity,
+    city: locationData.city,
+  });
+
+  if (coords.success) {
+    locationData.coordinates = geocodingService.toGeoJSON(
+      coords.lat,
+      coords.lng,
+    );
+  }
+
+  const property = await Property.create({
+    ...req.body,
+    location: locationData,
+    landlord: landlordId,
+    status: "pending_review",
+  });
+
+  // Run fraud detection in background
+  setImmediate(async () => {
+    try {
+      await fraudDetectionService.analyzePropertyForFraud(
+        property._id,
+        landlordId,
+      );
+    } catch (err) {
+      logger.error(`Fraud detection failed for new property: ${err.message}`);
+    }
+  });
+
+  await AuditLog.logFromRequest(req, "property_created", {
+    resourceType: "Property",
+    resourceId: property._id,
+    description: `New property created: ${property.title}`,
+  });
+
+  logger.info(`Property created: ${property._id} by landlord ${landlordId}`);
+
+  return sendSuccess(
+    res,
+    "Property listing created successfully. It will be reviewed and published within 24 hours.",
+    { property },
+    201,
+  );
+});
+
+// ── UPDATE PROPERTY (LANDLORD) ────────────────────────────────────────────────
+const updateProperty = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const { id } = req.params;
+
+  const property = await Property.findOne({
+    _id: id,
+    landlord: req.user._id,
+    isDeleted: false,
+  });
+
+  if (!property) {
+    return sendError(
+      res,
+      "Property not found or you do not own this listing.",
+      404,
+    );
+  }
+
+  // Prevent editing if under review
+  if (property.status === "pending_review" && req.user.role !== "admin") {
+    return sendError(
+      res,
+      "This property is currently under review and cannot be edited.",
+      400,
+    );
+  }
+
+  const allowedUpdates = [
+    "title",
+    "description",
+    "propertyType",
+    "location",
+    "details",
+    "amenities",
+    "pricing",
+    "leaseTerms",
+    "videoTour",
+    "virtualTour360",
+  ];
+
+  const updates = {};
+  allowedUpdates.forEach((field) => {
+    if (req.body[field] !== undefined) {
+      updates[field] = req.body[field];
+    }
+  });
+
+  // Re-geocode if location changed
+  if (updates.location) {
+    const coords = await geocodingService.geocodeAddress({
+      address: updates.location.address,
+      subCity: updates.location.subCity,
+      city: updates.location.city,
+    });
+    if (coords.success) {
+      updates["location.coordinates"] = geocodingService.toGeoJSON(
+        coords.lat,
+        coords.lng,
+      );
+    }
+  }
+
+  // Set back to pending review if significant changes
+  if (updates.title || updates.description || updates.pricing) {
+    updates.status = "pending_review";
+  }
+
+  const updatedProperty = await Property.findByIdAndUpdate(
+    id,
+    { $set: updates },
+    { new: true, runValidators: true },
+  ).populate("landlord", "firstName lastName avatar");
+
+  await AuditLog.logFromRequest(req, "property_updated", {
+    resourceType: "Property",
+    resourceId: id,
+    description: `Property updated: ${property.title}`,
+  });
+
+  return sendSuccess(res, "Property updated successfully.", {
+    property: updatedProperty,
+  });
+});
+
+// ── DELETE PROPERTY (LANDLORD) ────────────────────────────────────────────────
+const deleteProperty = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const property = await Property.findOne({
+    _id: id,
+    landlord: req.user._id,
+    isDeleted: false,
+  });
+
+  if (!property) {
+    return sendError(
+      res,
+      "Property not found or you do not own this listing.",
+      404,
+    );
+  }
+
+  if (property.isOccupied) {
+    return sendError(
+      res,
+      "This property has an active tenant. Please end the rental before deleting.",
+      400,
+    );
+  }
+
+  // Soft delete
+  await Property.softDelete(id);
+
+  // Delete all images from Cloudinary
+  const imagePublicIds = await PropertyImage.getPublicIds(id);
+  if (imagePublicIds.length > 0) {
+    await cloudinaryService.deleteImages(imagePublicIds);
+  }
+  await PropertyImage.deletePropertyImages(id);
+
+  await AuditLog.logFromRequest(req, "property_deleted", {
+    resourceType: "Property",
+    resourceId: id,
+    description: `Property deleted: ${property.title}`,
+  });
+
+  return sendSuccess(res, "Property listing deleted successfully.");
+});
+
+// ── UPLOAD PROPERTY IMAGES (LANDLORD) ────────────────────────────────────────
+const uploadImages = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  if (!req.files || req.files.length === 0) {
+    return sendError(res, "Please upload at least one image.", 400);
+  }
+
+  const property = await Property.findOne({
+    _id: id,
+    landlord: req.user._id,
+    isDeleted: false,
+  });
+
+  if (!property) {
+    return sendError(res, "Property not found.", 404);
+  }
+
+  // Check existing image count
+  const existingCount = await PropertyImage.countPropertyImages(id);
+  const maxImages = 10;
+
+  if (existingCount + req.files.length > maxImages) {
+    return sendError(
+      res,
+      `Cannot upload ${req.files.length} images. Maximum ${maxImages} images allowed. You have ${existingCount} existing images.`,
+      400,
+    );
+  }
+
+  // Upload all images to Cloudinary
+  const uploadResults = await cloudinaryService.uploadPropertyImages(
+    req.files.map((f) => f.buffer),
+    id,
+  );
+
+  const successfulUploads = uploadResults.filter((r) => r.success);
+  const failedUploads = uploadResults.filter((r) => !r.success);
+
+  if (successfulUploads.length === 0) {
+    return sendError(res, "All image uploads failed. Please try again.", 500);
+  }
+
+  // Save image records to database
+  const imageRecords = await PropertyImage.insertMany(
+    successfulUploads.map((result, index) => ({
+      property: id,
+      uploadedBy: req.user._id,
+      public_id: result.public_id,
+      url: result.url,
+      secureUrl: result.secureUrl,
+      thumbnailUrl: result.thumbnailUrl,
+      width: result.width,
+      height: result.height,
+      format: result.format,
+      fileSize: result.size,
+      displayOrder: existingCount + index,
+      isCover: existingCount === 0 && index === 0,
+    })),
+  );
+
+  // Update property images array
+  const imageDataForProperty = imageRecords.map((img) => ({
+    public_id: img.public_id,
+    url: img.secureUrl,
+    isCover: img.isCover,
+    caption: "",
+  }));
+
+  await Property.findByIdAndUpdate(id, {
+    $push: { images: { $each: imageDataForProperty } },
+  });
+
+  // Set cover image if this is the first upload
+  if (existingCount === 0 && imageRecords.length > 0) {
+    await Property.findByIdAndUpdate(id, {
+      coverImage: {
+        public_id: imageRecords[0].public_id,
+        url: imageRecords[0].secureUrl,
+      },
+    });
+  }
+
+  return sendSuccess(
+    res,
+    `${successfulUploads.length} image(s) uploaded successfully.${failedUploads.length > 0 ? ` ${failedUploads.length} failed.` : ""}`,
+    { images: imageRecords, failedCount: failedUploads.length },
+  );
+});
+
+// ── DELETE IMAGE (LANDLORD) ───────────────────────────────────────────────────
+const deleteImage = asyncHandler(async (req, res) => {
+  const { id, imageId } = req.params;
+
+  const image = await PropertyImage.findOne({
+    _id: imageId,
+    property: id,
+    uploadedBy: req.user._id,
+  });
+
+  if (!image) {
+    return sendError(res, "Image not found.", 404);
+  }
+
+  // Delete from Cloudinary
+  await cloudinaryService.deleteImage(image.public_id);
+
+  // Soft delete image record
+  await image.softDelete();
+
+  // Remove from property images array
+  await Property.findByIdAndUpdate(id, {
+    $pull: { images: { public_id: image.public_id } },
+  });
+
+  // If deleted image was cover, set new cover
+  if (image.isCover) {
+    const nextImage = await PropertyImage.findOne({
+      property: id,
+      isDeleted: false,
+    });
+    if (nextImage) {
+      await PropertyImage.setCoverImage(id, nextImage._id);
+      await Property.findByIdAndUpdate(id, {
+        coverImage: {
+          public_id: nextImage.public_id,
+          url: nextImage.secureUrl,
+        },
+      });
+    }
+  }
+
+  return sendSuccess(res, "Image deleted successfully.");
+});
+
+// ── SET COVER IMAGE (LANDLORD) ────────────────────────────────────────────────
+const setCoverImage = asyncHandler(async (req, res) => {
+  const { id, imageId } = req.params;
+
+  const image = await PropertyImage.findOne({
+    _id: imageId,
+    property: id,
+  });
+
+  if (!image) {
+    return sendError(res, "Image not found.", 404);
+  }
+
+  await PropertyImage.setCoverImage(id, imageId);
+  await Property.findByIdAndUpdate(id, {
+    coverImage: {
+      public_id: image.public_id,
+      url: image.secureUrl,
+    },
+  });
+
+  return sendSuccess(res, "Cover image updated successfully.");
+});
+
+// ── CREATE REVIEW (TENANT) ────────────────────────────────────────────────────
+const createReview = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const { id } = req.params;
+  const { rating, comment, title, subRatings, reviewType } = req.body;
+
+  const property = await Property.findById(id);
+  if (!property) {
+    return sendError(res, "Property not found.", 404);
+  }
+
+  // Check if already reviewed
+  const alreadyReviewed = await Review.hasReviewed(
+    req.user._id,
+    reviewType || "tenant_reviews_property",
+    id,
+  );
+
+  if (alreadyReviewed) {
+    return sendError(res, "You have already reviewed this property.", 409);
+  }
+
+  const review = await Review.create({
+    reviewer: req.user._id,
+    property: id,
+    reviewee: property.landlord,
+    reviewType: reviewType || "tenant_reviews_property",
+    rating,
+    comment,
+    title,
+    subRatings,
+    isVerified: true,
+    isApproved: true,
+    approvedAt: new Date(),
+  });
+
+  await review.populate("reviewer", "firstName lastName avatar");
+
+  // Notify landlord
+  await notificationService.sendNotification({
+    recipientId: property.landlord,
+    senderId: req.user._id,
+    type: "review_received",
+    data: {
+      propertyTitle: property.title,
+      rating,
+      reviewerName: `${req.user.firstName} ${req.user.lastName}`,
+    },
+    channels: { inApp: true },
+    resourceType: "Property",
+    resourceId: id,
+  });
+
+  return sendSuccess(res, "Review submitted successfully.", { review }, 201);
+});
+
+// ── GET PROPERTY REVIEWS (PUBLIC) ─────────────────────────────────────────────
+const getPropertyReviews = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { page = 1, limit = 10 } = req.query;
+
+  const reviews = await Review.getPropertyReviews(
+    id,
+    Number(page),
+    Number(limit),
+  );
+  const total = await Review.countDocuments({
+    property: id,
+    isApproved: true,
+    isPublic: true,
+  });
+
+  return sendPaginated(res, "Reviews retrieved successfully.", reviews, {
+    total,
+    page: Number(page),
+    limit: Number(limit),
+    totalPages: Math.ceil(total / Number(limit)),
+  });
+});
+
+// ── REPORT PROPERTY (TENANT) ──────────────────────────────────────────────────
+const reportProperty = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors.array());
+
+  const { id } = req.params;
+  const { reportType, description } = req.body;
+
+  const property = await Property.findById(id);
+  if (!property) {
+    return sendError(res, "Property not found.", 404);
+  }
+
+  // Check for duplicate report
+  const existing = await Report.findOne({
+    reportedBy: req.user._id,
+    resourceType: "property",
+    resourceId: id,
+  });
+
+  if (existing) {
+    return sendError(res, "You have already reported this property.", 409);
+  }
+
+  const report = await Report.create({
+    reportedBy: req.user._id,
+    resourceType: "property",
+    resourceId: id,
+    reportType,
+    description,
+    resourceSnapshot: {
+      title: property.title,
+      landlord: property.landlord,
+      price: property.pricing?.monthlyRent,
+    },
+  });
+
+  // Update property moderation
+  await Property.findByIdAndUpdate(id, {
+    $inc: { "moderation.reportCount": 1 },
+    $push: { "moderation.reportReasons": reportType },
+    "moderation.isReported": true,
+  });
+
+  return sendSuccess(
+    res,
+    "Report submitted successfully. Our team will investigate within 24 hours.",
+    { reportId: report._id },
+  );
+});
+
+// ── GET PROPERTY IMAGES (PUBLIC) ──────────────────────────────────────────────
+const getPropertyImages = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const images = await PropertyImage.getPropertyImages(id);
+  return sendSuccess(res, "Property images retrieved.", { images });
+});
+
+// ── REORDER IMAGES (LANDLORD) ─────────────────────────────────────────────────
+const reorderImages = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { imageOrders } = req.body;
+
+  if (!Array.isArray(imageOrders)) {
+    return sendError(res, "imageOrders must be an array.", 400);
+  }
+
+  await PropertyImage.reorderImages(id, imageOrders);
+  return sendSuccess(res, "Image order updated successfully.");
+});
+
+module.exports = {
+  getProperties,
+  getFeaturedProperties,
+  getProperty,
+  createProperty,
+  updateProperty,
+  deleteProperty,
+  uploadImages,
+  deleteImage,
+  setCoverImage,
+  createReview,
+  getPropertyReviews,
+  reportProperty,
+  getPropertyImages,
+  reorderImages,
+};
+========== SEARCH SERVICE ==========
+src/controllers/propertyController.js:87:const getFeaturedProperties = asyncHandler(async (req, res) => {
+src/controllers/propertyController.js:89:  const properties = await searchService.getFeaturedProperties(Number(limit));
+src/controllers/propertyController.js:656:  getFeaturedProperties,
+src/routes/propertyRoutes.js:29:router.get("/featured", propertyController.getFeaturedProperties);
+========== RESPONSE UTILITY ==========
+src/controllers/adminController.js:14:const { sendSuccess, sendError } = require("../utils/apiResponse");
+src/controllers/adminController.js:111:    return sendError(res, "Subject and message are required.", 400);
+src/controllers/adminController.js:123:    return sendError(res, "No users found for this target.", 404);
+src/controllers/adminController.js:249:  if (!review) return sendError(res, "Review not found.", 404);
+src/controllers/adminController.js:258:    return sendError(res, "Invalid action.", 400);
+src/controllers/adminPaymentController.js:9:  sendError,
+src/controllers/adminPaymentController.js:65:  if (!payment) return sendError(res, "Payment not found.", 404);
+src/controllers/adminPaymentController.js:83:  if (!payment) return sendError(res, "Payment not found.", 404);
+src/controllers/adminPaymentController.js:85:    return sendError(
+src/controllers/adminPaymentController.js:94:    return sendError(
+src/controllers/adminPaymentController.js:122:    return sendError(res, "Resolution description is required.", 400);
+src/controllers/adminPaymentController.js:125:  if (!payment) return sendError(res, "Payment not found.", 404);
+src/controllers/adminPaymentController.js:127:    return sendError(res, "This payment has no open dispute.", 400);
+src/controllers/adminPropertyController.js:14:  sendError,
+src/controllers/adminPropertyController.js:105:  if (!property) return sendError(res, "Property not found.", 404);
+src/controllers/adminPropertyController.js:126:  if (!property) return sendError(res, "Property not found.", 404);
+src/controllers/adminPropertyController.js:178:      return sendError(res, "Invalid action.", 400);
+src/controllers/adminPropertyController.js:211:  if (!property) return sendError(res, "Property not found.", 404);
+src/controllers/adminPropertyController.js:215:  if (!result.success) return sendError(res, result.error, 500);
+src/controllers/adminPropertyController.js:225:    return sendError(res, "Property IDs array is required.", 400);
+src/controllers/adminPropertyController.js:229:    return sendError(res, "Maximum 50 properties per batch check.", 400);
+src/controllers/adminPropertyController.js:275:  if (!property) return sendError(res, "Property not found.", 404);
+src/controllers/adminReportController.js:9:  sendError,
+src/controllers/adminReportController.js:59:  if (!report) return sendError(res, "Report not found.", 404);
+src/controllers/adminReportController.js:73:  if (!report) return sendError(res, "Report not found.", 404);
+src/controllers/adminReportController.js:93:      return sendError(res, "Invalid action.", 400);
+src/controllers/adminReviewController.js:8:  sendError,
+src/controllers/adminReviewController.js:51:  if (!review) return sendError(res, "Review not found.", 404);
+src/controllers/adminReviewController.js:62:  if (!review) return sendError(res, "Review not found.", 404);
+src/controllers/adminReviewController.js:75:      return sendError(res, "Invalid action. Use: approve, reject, flag", 400);
+src/controllers/adminReviewController.js:96:  if (!review) return sendError(res, "Review not found.", 404);
+src/controllers/adminSettingsController.js:9:  sendError,
+src/controllers/adminSettingsController.js:71:    return sendError(res, "enabled field is required.", 400);
+src/controllers/adminSettingsController.js:97:  if (!section) return sendError(res, "Section is required.", 400);
+src/controllers/adminSettingsController.js:130:    return sendError(
+src/controllers/adminUserController.js:14:  sendError,
+src/controllers/adminUserController.js:28:  if (!result.success) return sendError(res, "Failed to retrieve users.", 500);
+src/controllers/adminUserController.js:46:  if (!user) return sendError(res, "User not found.", 404);
+src/controllers/adminUserController.js:62:    return sendError(res, "You cannot change your own account status.", 400);
+src/controllers/adminUserController.js:71:  if (!user) return sendError(res, "User not found.", 404);
+src/controllers/adminUserController.js:108:    return sendError(res, "You cannot change your own role.", 400);
+src/controllers/adminUserController.js:115:  if (!user) return sendError(res, "User not found.", 404);
+src/controllers/adminUserController.js:134:    return sendError(res, "You cannot delete your own account.", 400);
+src/controllers/adminUserController.js:138:  if (!user) return sendError(res, "User not found.", 404);
+src/controllers/adminUserController.js:181:  if (!kyc) return sendError(res, "KYC submission not found.", 404);
+src/controllers/adminUserController.js:199:  if (!kyc) return sendError(res, "KYC submission not found.", 404);
+src/controllers/adminUserController.js:237:    return sendError(res, "Invalid KYC action.", 400);
+src/controllers/ai/aiController.js:14:const { sendSuccess, sendError } = require("../../utils/apiResponse");
+src/controllers/ai/aiController.js:29:    return sendError(res, "AI chat assistant is currently disabled.", 503);
+src/controllers/ai/aiController.js:49:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/ai/aiController.js:57:    return sendError(res, "AI chat assistant is currently disabled.", 503);
+src/controllers/ai/aiController.js:64:    return sendError(res, "Conversation ID and message are required.", 400);
+src/controllers/ai/aiController.js:68:    return sendError(res, "Message is too long. Maximum 2000 characters.", 400);
+src/controllers/ai/aiController.js:81:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/ai/aiController.js:158:  if (!conversation) return sendError(res, "Conversation not found.", 404);
+src/controllers/ai/aiController.js:168:    return sendError(res, "AI recommendations are currently disabled.", 503);
+src/controllers/ai/aiController.js:181:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/ai/aiController.js:191:    return sendError(
+src/controllers/ai/aiController.js:210:    return sendError(res, "AI smart search is currently disabled.", 503);
+src/controllers/ai/aiController.js:216:    return sendError(res, "Search query must be at least 3 characters.", 400);
+src/controllers/ai/aiController.js:227:  if (!result.success) return sendError(res, result.error, 500);
+src/controllers/ai/aiController.js:245:    return sendError(res, "AI rent advisor is currently disabled.", 503);
+src/controllers/ai/aiController.js:250:    return sendError(res, "Property details are required.", 400);
+src/controllers/ai/aiController.js:257:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/ai/aiController.js:265:    return sendError(res, "AI lease explainer is currently disabled.", 503);
+src/controllers/ai/aiController.js:277:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/ai/aiController.js:285:  if (!clauseText) return sendError(res, "Clause text is required.", 400);
+src/controllers/ai/aiController.js:289:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/ai/aiController.js:297:    return sendError(
+src/controllers/ai/aiController.js:306:    return sendError(res, "Issue description is required.", 400);
+src/controllers/ai/aiController.js:314:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/ai/aiController.js:322:    return sendError(
+src/controllers/ai/aiController.js:331:    return sendError(res, "Property details are required.", 400);
+src/controllers/ai/aiController.js:339:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/ai/aiController.js:348:    return sendError(res, "Existing description is required.", 400);
+src/controllers/ai/aiController.js:356:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/ai/aiController.js:370:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/ai/aiController.js:397:  if (!description) return sendError(res, "Description is required.", 400);
+src/controllers/ai/aiController.js:402:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/analyticsController.js:9:const { sendSuccess, sendError } = require("../utils/apiResponse");
+src/controllers/analyticsController.js:187:  if (!property) return sendError(res, "Property not found.", 404);
+src/controllers/authController.js:15:  sendError,
+src/controllers/authController.js:40:    return sendError(
+src/controllers/authController.js:133:    return sendError(res, result.error, 400, {
+src/controllers/authController.js:171:    return sendError(
+src/controllers/authController.js:181:    return sendError(
+src/controllers/authController.js:200:    return sendError(
+src/controllers/authController.js:209:    return sendError(
+src/controllers/authController.js:216:    return sendError(
+src/controllers/authController.js:274:    return sendError(
+src/controllers/authController.js:286:    return sendError(
+src/controllers/authController.js:389:    return sendError(
+src/controllers/authController.js:398:    return sendError(res, result.error, 400);
+src/controllers/authController.js:436:    return sendError(res, "Current password is incorrect.", 400);
+src/controllers/authController.js:466:    return sendError(res, "User not found.", 404);
+src/controllers/authController.js:507:    return sendError(res, "Please upload an image file.", 400);
+src/controllers/authController.js:523:    return sendError(res, "Failed to upload avatar. Please try again.", 500);
+src/controllers/authController.js:561:    return sendError(res, result.error, 400, {
+src/controllers/authController.js:580:    return sendError(res, result.error, 400, {
+src/controllers/authController.js:672:    return sendError(
+src/controllers/authController.js:680:    return sendError(res, "Please upload at least one identity document.", 400);
+src/controllers/authController.js:687:    return sendError(res, "Your identity is already verified.", 400);
+src/controllers/authController.js:794:    return sendError(
+src/controllers/authController.js:807:    return sendError(res, result.error, 400);
+src/controllers/blogController.js:9:  sendError,
+src/controllers/blogController.js:47:  if (!post) return sendError(res, "Blog post not found.", 404);
+src/controllers/blogController.js:120:  if (!post) return sendError(res, "Blog post not found.", 404);
+src/controllers/blogController.js:157:  if (!post) return sendError(res, "Blog post not found.", 404);
+src/controllers/bookingController.js:13:  sendError,
+src/controllers/bookingController.js:41:    return sendError(res, "Property not found.", 404);
+src/controllers/bookingController.js:45:    return sendError(res, "This property is not available for booking.", 400);
+src/controllers/bookingController.js:49:    return sendError(res, "You cannot book your own property.", 400);
+src/controllers/bookingController.js:55:    return sendError(
+src/controllers/bookingController.js:185:    return sendError(res, "Booking not found.", 404);
+src/controllers/bookingController.js:206:    return sendError(res, "Booking not found or cannot be cancelled.", 404);
+src/controllers/bookingController.js:283:    return sendError(res, "Booking not found or already processed.", 404);
+src/controllers/bookingController.js:352:    return sendError(res, "Booking not found or already processed.", 404);
+src/controllers/bookingController.js:391:    return sendError(res, "Booking not found or not in approved status.", 404);
+src/controllers/contractController.js:13:  sendError,
+src/controllers/contractController.js:31:  if (!property) return sendError(res, "Property not found.", 404);
+src/controllers/contractController.js:94:  if (!contract) return sendError(res, "Contract not found.", 404);
+src/controllers/contractController.js:116:    return sendError(res, "Contract not found or already signed.", 404);
+src/controllers/contractController.js:160:    return sendError(res, "Contract not found or already signed.", 404);
+src/controllers/contractController.js:215:    return sendError(res, result.error || "Failed to explain contract.", 400);
+src/controllers/contractController.js:225:  if (!clauseText) return sendError(res, "Clause text is required.", 400);
+src/controllers/contractController.js:230:    return sendError(res, result.error, 400);
+src/controllers/contractController.js:248:  if (!contract) return sendError(res, "Active contract not found.", 404);
+src/controllers/contractController.js:265:    return sendError(
+src/controllers/conversationController.js:10:  sendError,
+src/controllers/conversationController.js:30:  if (!otherUserId) return sendError(res, "User ID is required.", 400);
+src/controllers/conversationController.js:33:    return sendError(
+src/controllers/conversationController.js:41:  if (!otherUser) return sendError(res, "User not found.", 404);
+src/controllers/conversationController.js:80:  if (!conversation) return sendError(res, "Conversation not found.", 404);
+src/controllers/conversationController.js:120:  if (!conversation) return sendError(res, "Conversation not found.", 404);
+src/controllers/conversationController.js:160:  if (!conversation) return sendError(res, "Conversation not found.", 404);
+src/controllers/conversationController.js:178:  if (!conversation) return sendError(res, "Conversation not found.", 404);
+src/controllers/conversationController.js:205:  if (!q || q.length < 2) return sendError(res, "Search query too short.", 400);
+src/controllers/conversationController.js:212:  if (!conversation) return sendError(res, "Conversation not found.", 404);
+src/controllers/faqController.js:8:  sendError,
+src/controllers/faqController.js:35:  if (!q || q.length < 2) return sendError(res, "Search query too short.", 400);
+src/controllers/faqController.js:46:  if (!faq) return sendError(res, "FAQ not found.", 404);
+src/controllers/faqController.js:59:    return sendError(res, "isHelpful is required.", 400);
+src/controllers/faqController.js:104:  if (!faq) return sendError(res, "FAQ not found.", 404);
+src/controllers/landlordController.js:17:  sendError,
+src/controllers/landlordController.js:75:    return sendError(res, "Landlord not found.", 404);
+src/controllers/landlordController.js:146:    return sendError(
+src/controllers/landlordController.js:172:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/landlordController.js:189:    return sendError(res, result.error || "No data available.", 400);
+src/controllers/landlordController.js:199:    return sendError(res, "Property details are required.", 400);
+src/controllers/landlordController.js:208:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/landlordController.js:218:    return sendError(res, "Existing description is required.", 400);
+src/controllers/landlordController.js:226:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/landlordController.js:275:  if (!rental) return sendError(res, "Tenant not found in your records.", 404);
+src/controllers/landlordController.js:319:    return sendError(
+src/controllers/landlordController.js:332:    return sendError(res, "You have already reviewed this tenant.", 409);
+src/controllers/landlordController.js:352:  if (!result.success) return sendError(res, result.error, 400);
+src/controllers/maintenanceController.js:13:  sendError,
+src/controllers/maintenanceController.js:23:    return sendError(res, "Issue description is required.", 400);
+src/controllers/maintenanceController.js:33:    return sendError(res, result.error, 400);
+src/controllers/maintenanceController.js:56:    return sendError(
+src/controllers/maintenanceController.js:223:  if (!request) return sendError(res, "Maintenance request not found.", 404);
+src/controllers/maintenanceController.js:242:  if (!request) return sendError(res, "Maintenance request not found.", 404);
+src/controllers/maintenanceController.js:275:  if (!request) return sendError(res, "Request not found.", 404);
+src/controllers/maintenanceController.js:296:  if (!request) return sendError(res, "Request not found.", 404);
+src/controllers/maintenanceController.js:350:  if (!request) return sendError(res, "Request not found.", 404);
+src/controllers/maintenanceController.js:373:  if (!request) return sendError(res, "Request not found.", 404);
+src/controllers/maintenanceController.js:423:  if (!property) return sendError(res, "Property not found.", 404);
+src/controllers/notificationController.js:8:  sendError,
+src/controllers/notificationController.js:53:  if (!notification) return sendError(res, "Notification not found.", 404);
+src/controllers/notificationController.js:80:  if (!notification) return sendError(res, "Notification not found.", 404);
+src/controllers/notificationController.js:103:  if (!notification) return sendError(res, "Notification not found.", 404);
+src/controllers/paymentController.js:13:  sendError,
+src/controllers/paymentController.js:46:    return sendError(res, "Active rental not found.", 404);
+src/controllers/paymentController.js:61:      return sendError(
+src/controllers/paymentController.js:228:  if (!payment) return sendError(res, "Payment not found.", 404);
+src/controllers/paymentController.js:238:  if (!reason) return sendError(res, "Dispute reason is required.", 400);
+src/controllers/paymentController.js:246:  if (!payment) return sendError(res, "Payment not found.", 404);
+src/controllers/paymentController.js:249:    return sendError(res, "This payment already has an open dispute.", 409);
+src/controllers/paymentController.js:282:  if (!payment) return sendError(res, "Payment receipt not found.", 404);
+src/controllers/propertyController.js:18:  sendError,
+src/controllers/propertyController.js:70:    return sendError(res, "Failed to fetch properties.", 500);
+src/controllers/propertyController.js:105:    return sendError(res, "Property not found.", 404);
+src/controllers/propertyController.js:153:    return sendError(
+src/controllers/propertyController.js:224:    return sendError(
+src/controllers/propertyController.js:233:    return sendError(
+src/controllers/propertyController.js:308:    return sendError(
+src/controllers/propertyController.js:316:    return sendError(
+src/controllers/propertyController.js:347:    return sendError(res, "Please upload at least one image.", 400);
+src/controllers/propertyController.js:357:    return sendError(res, "Property not found.", 404);
+src/controllers/propertyController.js:365:    return sendError(
+src/controllers/propertyController.js:382:    return sendError(res, "All image uploads failed. Please try again.", 500);
+src/controllers/propertyController.js:443:    return sendError(res, "Image not found.", 404);
+src/controllers/propertyController.js:487:    return sendError(res, "Image not found.", 404);
+src/controllers/propertyController.js:511:    return sendError(res, "Property not found.", 404);
+src/controllers/propertyController.js:522:    return sendError(res, "You have already reviewed this property.", 409);
+src/controllers/propertyController.js:593:    return sendError(res, "Property not found.", 404);
+src/controllers/propertyController.js:604:    return sendError(res, "You have already reported this property.", 409);
+src/controllers/propertyController.js:647:    return sendError(res, "imageOrders must be an array.", 400);
+src/controllers/rentalController.js:12:  sendError,
+src/controllers/rentalController.js:40:    return sendError(res, "Property not found or you do not own it.", 404);
+src/controllers/rentalController.js:43:    return sendError(res, "This property is already occupied.", 400);
+src/controllers/rentalController.js:47:    return sendError(res, "Tenant not found.", 404);
+src/controllers/rentalController.js:184:  if (!rental) return sendError(res, "Rental not found.", 404);
+src/controllers/rentalController.js:201:  if (!rental) return sendError(res, "Rental not found.", 404);
+src/controllers/rentalController.js:241:  if (!rental) return sendError(res, "Active rental not found.", 404);
+src/controllers/rentalController.js:289:  if (!rental) return sendError(res, "Rental not found.", 404);
+src/controllers/savedPropertyController.js:9:  sendError,
+src/controllers/savedPropertyController.js:45:  if (!property) return sendError(res, "Property not found.", 404);
+src/controllers/savedPropertyController.js:73:  if (!saved) return sendError(res, "Saved property not found.", 404);
+src/controllers/savedPropertyController.js:97:  if (!saved) return sendError(res, "Saved property not found.", 404);
+src/controllers/savedSearchController.js:9:  sendError,
+src/controllers/savedSearchController.js:40:    return sendError(
+src/controllers/savedSearchController.js:82:  if (!search) return sendError(res, "Saved search not found.", 404);
+src/controllers/savedSearchController.js:100:  if (!result.success) return sendError(res, "Search failed.", 500);
+src/controllers/savedSearchController.js:118:  if (!search) return sendError(res, "Saved search not found.", 404);
+src/controllers/savedSearchController.js:142:  if (!search) return sendError(res, "Saved search not found.", 404);
+src/controllers/savedSearchController.js:168:    return sendError(res, "Search query must be at least 3 characters.", 400);
+src/controllers/savedSearchController.js:179:  if (!result.success) return sendError(res, result.error, 500);
+========== NOTIFICATION SERVICE ==========
+src/controllers/adminPropertyController.js:184:    await notificationService.sendNotification({
+src/controllers/adminPropertyController.js:285:  await notificationService.sendNotification({
+src/controllers/adminUserController.js:79:  await notificationService.sendNotification({
+src/controllers/adminUserController.js:208:    await notificationService.sendNotification({
+src/controllers/adminUserController.js:222:    await notificationService.sendNotification({
+src/controllers/authController.js:85:  await notificationService.sendNotification({
+src/controllers/authController.js:739:  await notificationService.sendNotification({
+src/controllers/bookingController.js:93:  await notificationService.sendNotification({
+src/controllers/bookingController.js:212:  await notificationService.sendNotification({
+src/controllers/bookingController.js:294:  await notificationService.sendNotification({
+src/controllers/bookingController.js:357:  await notificationService.sendNotification({
+src/controllers/contractController.js:49:  await notificationService.sendNotification({
+src/controllers/contractController.js:120:  await notificationService.sendNotification({
+src/controllers/contractController.js:168:  await notificationService.sendNotification({
+src/controllers/contractController.js:183:    await notificationService.sendNotification({
+src/controllers/maintenanceController.js:122:  await notificationService.sendNotification({
+src/controllers/maintenanceController.js:250:  await notificationService.sendNotification({
+src/controllers/maintenanceController.js:316:  await notificationService.sendNotification({
+src/controllers/maintenanceController.js:385:  await notificationService.sendNotification({
+src/controllers/paymentController.js:113:  await notificationService.sendNotification({
+src/controllers/propertyController.js:542:  await notificationService.sendNotification({
+src/controllers/rentalController.js:83:  await notificationService.sendNotification({
+src/controllers/rentalController.js:261:  await notificationService.sendNotification({
+src/socket/messageHandler.js:129:    await notificationService.sendNotification({
+========== OTP IMPLEMENTATION ==========
+src/services/otpService.js:46:    const canRequest = await OTPCode.canRequestNewOTP(userId, purpose);
+src/services/otpService.js:162:    const canRequest = await OTPCode.canRequestNewOTP(userId, purpose, 1);
